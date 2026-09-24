@@ -1,7 +1,12 @@
 # Local services for development. Matches production engines (Postgres, Valkey, S3).
+# Default profile (no --profile flag) starts infra only: postgres, valkey, minio, mailpit.
+# `docker compose --profile full up -d` also builds and runs api, worker, imaging, web and floor
+# from the sibling repos, for a production-like local run.
+name: local
+
 services:
   postgres:
-    image: postgres:17
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: invai
       POSTGRES_PASSWORD: invai
@@ -10,21 +15,177 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invai -d invai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   valkey:
     image: valkey/valkey:8
     command: ["valkey-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   minio:
-    image: minio/minio
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: invai
       MINIO_ROOT_PASSWORD: invai-secret
+      # CORS for browser uploads/downloads via presigned URLs. This is a server-wide MinIO
+      # setting (`*` is actually already MinIO's own default) — MinIO's S3 PutBucketCors API
+      # (per-bucket CORS) returns NotImplemented on this server version, so `mc cors set` /
+      # `aws s3api put-bucket-cors` cannot be used here; the env var is the supported path.
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
     ports: ["9000:9000", "9001:9001"]
     volumes:
       - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: creates the invai-local bucket and denies anonymous access, then exits.
+  # `docker/minio/minio` on Docker Hub no longer exists; this uses quay.io/minio/mc,
+  # matching the quay.io/minio/minio server image above.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 invai invai-secret &&
+      mc mb --ignore-existing local/invai-local &&
+      mc anonymous set none local/invai-local &&
+      echo 'minio-init: bucket invai-local ready'
+      "
+    restart: "no"
+
+  # SMTP catcher for vendor and invite emails. UI at :8025, SMTP at :1025 (no auth).
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["1025:1025", "8025:8025"]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- full profile: production-like local run, built from the sibling repos ---
+
+  api:
+    profiles: ["full"]
+    build:
+      context: ../..
+      dockerfile: invai-backend/Dockerfile
+    command: ["node", "dist/server.js"]
+    ports: ["3000:3000"]
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      DATABASE_URL: postgres://invai_app:invai@postgres:5432/invai
+      REDIS_URL: redis://valkey:6379
+      S3_BUCKET: invai-local
+      S3_ENDPOINT: http://minio:9000
+      IMAGING_URL: http://imaging:8000
+      BETTER_AUTH_SECRET: change-me-32-chars-minimum-xxxxxxxx
+      BETTER_AUTH_URL: http://localhost:3000
+      WEB_ORIGIN: http://localhost:5173
+      ANTHROPIC_API_KEY: ""
+      EASYPOST_API_KEY: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    profiles: ["full"]
+    build:
+      context: ../..
+      dockerfile: invai-backend/Dockerfile
+    command: ["node", "dist/index.js"]
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://invai_app:invai@postgres:5432/invai
+      REDIS_URL: redis://valkey:6379
+      S3_BUCKET: invai-local
+      S3_ENDPOINT: http://minio:9000
+      IMAGING_URL: http://imaging:8000
+      BETTER_AUTH_SECRET: change-me-32-chars-minimum-xxxxxxxx
+      BETTER_AUTH_URL: http://localhost:3000
+      WEB_ORIGIN: http://localhost:5173
+      ANTHROPIC_API_KEY: ""
+      EASYPOST_API_KEY: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  imaging:
+    profiles: ["full"]
+    build:
+      context: ../../invai-imaging
+      dockerfile: Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      S3_BUCKET: invai-local
+      S3_ENDPOINT: http://minio:9000
+      REDIS_URL: redis://valkey:6379
+      MODAL_TOKEN_ID: ""
+      MODAL_TOKEN_SECRET: ""
+      FAL_KEY: ""
+    depends_on:
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    profiles: ["full"]
+    build:
+      context: ../..
+      dockerfile: invai-web/Dockerfile
+    ports: ["5173:80"]
+    environment:
+      VITE_API_URL: http://localhost:3000
+    depends_on:
+      - api
+
+  floor:
+    profiles: ["full"]
+    build:
+      context: ../..
+      dockerfile: invai-floor/Dockerfile
+    ports: ["5174:80"]
+    environment:
+      VITE_API_URL: http://localhost:3000
+    depends_on:
+      - api
 
 volumes:
   pgdata:

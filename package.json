@@ -9,13 +9,19 @@
     "deploy:prod": "sst deploy --stage production",
     "local:up": "docker compose -f local/docker-compose.yml up -d",
     "local:down": "docker compose -f local/docker-compose.yml down",
+    "local:full": "docker compose -f local/docker-compose.yml --profile full up -d --build",
+    "dev:all": "bash scripts/dev.sh",
+    "stop": "bash scripts/stop.sh",
+    "reset-db": "bash scripts/reset-db.sh",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "sst": "^4.17.1",
     "typescript": "^7.0.2",
-    "@biomejs/biome": "^2.5.14"
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^26.6.2",
+    "concurrently": "^9.1.2"
   },
   "packageManager": "pnpm@12.6.0",
   "engines": {

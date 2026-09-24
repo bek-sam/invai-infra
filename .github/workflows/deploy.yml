@@ -1,0 +1,96 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "SST stage to deploy"
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+  push:
+    tags: ["v*"]
+
+# OIDC role assumption: no long-lived AWS keys in the repo (architecture.md §11).
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Tag pushes deploy production; workflow_dispatch uses the chosen stage (default staging).
+    environment: ${{ github.event_name == 'push' && 'production' || inputs.stage }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: invai-infra
+      # sst.config.ts builds container images and static sites from these sibling repos —
+      # same layout as local dev (all repos checked out side by side). Each needs a
+      # read-only deploy key secret, same approach the app repos' own CI uses for
+      # invai-contracts/invai-ui.
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-backend
+          path: invai-backend
+          ssh-key: ${{ secrets.BACKEND_DEPLOY_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-imaging
+          path: invai-imaging
+          ssh-key: ${{ secrets.IMAGING_DEPLOY_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-web
+          path: invai-web
+          ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-floor
+          path: invai-floor
+          ssh-key: ${{ secrets.FLOOR_DEPLOY_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-contracts
+          path: invai-contracts
+          ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          repository: bek-sam/invai-ui
+          path: invai-ui
+          ssh-key: ${{ secrets.UI_DEPLOY_KEY }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: invai-infra/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: invai-infra/.nvmrc
+          cache: pnpm
+          cache-dependency-path: invai-infra/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: invai-infra
+      - run: pnpm install --frozen-lockfile
+        working-directory: invai-contracts
+      - run: pnpm install --frozen-lockfile
+        working-directory: invai-ui
+      # web/floor are deployed as sst.aws.StaticSite: SST runs `pnpm build` in each directory
+      # itself (no Docker), so their own install has to happen here first.
+      - run: pnpm install --frozen-lockfile
+        working-directory: invai-web
+      - run: pnpm install --frozen-lockfile
+        working-directory: invai-floor
+
+      # Placeholder role ARN — replace with the real deploy role before this workflow can run.
+      # Trust policy: token.actions.githubusercontent.com, audience sts.amazonaws.com,
+      # subject restricted to this repo (e.g. repo:bek-sam/invai-infra:ref:refs/tags/v*
+      # and repo:bek-sam/invai-infra:environment:staging/production).
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/invai-deploy
+          aws-region: us-east-1
+
+      - name: sst deploy
+        working-directory: invai-infra
+        run: pnpm exec sst deploy --stage ${{ github.event_name == 'push' && 'production' || inputs.stage }}
