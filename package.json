@@ -1,0 +1,24 @@
+{
+  "name": "invai-infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "InvAI AWS infrastructure (SST) and local dev services",
+  "type": "module",
+  "scripts": {
+    "deploy:staging": "sst deploy --stage staging",
+    "deploy:prod": "sst deploy --stage production",
+    "local:up": "docker compose -f local/docker-compose.yml up -d",
+    "local:down": "docker compose -f local/docker-compose.yml down",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "sst": "^4.17.1",
+    "typescript": "^7.0.2",
+    "@biomejs/biome": "^2.5.14"
+  },
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24"
+  }
+}

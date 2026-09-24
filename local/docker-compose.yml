@@ -1,0 +1,31 @@
+# Local services for development. Matches production engines (Postgres, Valkey, S3).
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: invai
+      POSTGRES_PASSWORD: invai
+      POSTGRES_DB: invai
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  valkey:
+    image: valkey/valkey:8
+    command: ["valkey-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports: ["6379:6379"]
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: invai
+      MINIO_ROOT_PASSWORD: invai-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  miniodata:
