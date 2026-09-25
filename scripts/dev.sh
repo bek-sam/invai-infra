@@ -101,6 +101,12 @@ if [ ! -d "$INFRA_DIR/node_modules/concurrently" ]; then
   (cd "$INFRA_DIR" && pnpm install)
 fi
 
+# T-2-6 (qa-engineer): CSV-only channels (Etsy, Amazon, TikTok, Walmart while on CSV) now ship
+# on the mock carrier's first scan instead of at push time (T-2-5). The mock carrier fakes that
+# scan after MOCK_CARRIER_TRANSIT_HOURS (backend default: 2h). Keep it low here so local dev and
+# the golden-path E2E suites see items reach `shipped` in seconds; an agent may still override it.
+export MOCK_CARRIER_TRANSIT_HOURS="${MOCK_CARRIER_TRANSIT_HOURS:-0.001}"
+
 log "Starting api, worker, imaging, web, floor (Ctrl-C stops these; infra keeps running)"
 cd "$INFRA_DIR"
 exec node_modules/.bin/concurrently \
