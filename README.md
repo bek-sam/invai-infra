@@ -72,48 +72,102 @@ split in `local/docker-compose.yml` and the comment at the top of each of those 
 
 ## AWS (SST)
 
-`sst.config.ts` (written and typechecked against the installed `sst@4.17.1` — check
-`.sst/platform/src/components` before changing component options, not older docs) defines:
+`sst.config.ts` is written and typechecked against the installed `sst@4.17.1`. Check
+`.sst/platform/src/components` before changing a component option; don't rely on docs for other
+versions. Nothing has been deployed yet: deploys are the owner's (`deploy-to-environment`), and
+the guard hook blocks deploys, secret changes and AWS CLI calls for agents.
 
-- A VPC with a NAT **EC2 instance** instead of NAT Gateways (~$30/mo saved).
-- **RDS Postgres 17**, encrypted at rest (the component's default), private subnets only, RDS
-  Proxy on for the `production` stage.
-- **Valkey** via `sst.aws.Redis` (`engine: "valkey"`), matching the local Valkey image.
-- A private **S3 bucket** with lifecycle rules matching architecture.md §7: `sheets/` expires
-  after 90 days, `raw/` after 30.
-- A customer-managed **KMS key** for field-level encryption of buyer PII and OAuth tokens.
-- A placeholder **SES** email identity (`SES_DOMAIN` env var, defaults to
-  `<stage>.invai.example`) — swap in the real sending domain and verify it before use.
-- An ECS **Cluster** with `api` (public, load-balanced, health-checked on `/health`),
-  `worker` and `imaging` (4–8 GB memory, internal-only — reached over service discovery via
-  `imaging.url`, no load balancer).
-- **Static sites** for `web` and `floor` (`sst.aws.StaticSite`, built directly with
-  `pnpm build`, not via Docker).
-- **Secrets** (`sst.Secret`, set with `sst secret set <Name> <value> --stage <stage>`):
-  `BetterAuthSecret` and `FieldEncryptionKey` are required (no placeholder — deploy fails
-  loudly if unset); `AnthropicApiKey`, `EasyPostApiKey`, `ShopifyApiKey`, `ShopifyApiSecret`
-  default to `""`, matching the mock/sandbox-provider-when-missing convention from the
-  workspace `CLAUDE.md`.
-- Stages `staging` and `production`; `production` has `removal: "retain"` and `protect: true`.
+### What it creates (per stage)
 
-**Known gap:** the Postgres component only provisions the master (owner) user. Nothing here
-yet creates the low-privilege, RLS-enforced `invai_app` role in RDS the way `local/init.sql`
-does — that needs a one-time bootstrap step (a script run against the instance, e.g. from the
-deploy job or an SST dynamic provider) before `invai_app` can be used in AWS the same way it
-is locally.
+- **Stages:** `production` (`removal: retain`, `protect`), `staging`, and `demo`. `demo` is the
+  only stage with `ALLOW_MOCKS=true` and blank provider-key placeholders. Any other stage name
+  behaves like staging.
+- **Domain:** one registrable domain from `INVAI_DOMAIN`. In production the hosts are `app.`,
+  `floor.` and `api.` plus the domain; on other stages they are `app.<stage>.` and so on. Every
+  app is therefore same-site for Better Auth cookies. SST creates the ACM certificates and
+  Route 53 records in the domain's hosted zone.
+- **Network:** a VPC with a NAT EC2 instance. ECS tasks, RDS and Valkey are in the private
+  subnets; only the ALB is public. An S3 gateway endpoint serves the private route tables.
+- **RDS Postgres 17:**
+  - Instance `t4g.small` (staging) or `t4g.medium` (production), encrypted, `rds.force_ssl=1`.
+  - Backups 14 days (35 in production); deletion protection and a final snapshot in
+    production; RDS Proxy in production.
+  - The api and worker connect as `invai_app` (RLS enforced) with `sslmode=verify-full`.
+  - The owner role is used only by the migrate task, the outbox relay and cross-tenant jobs,
+    always direct to the instance.
+- **Valkey:** cluster mode off and `maxmemory-policy noeviction` (BullMQ), with TLS and AUTH.
+- **S3 bucket:**
+  - Private, HTTPS only, versioned.
+  - Old versions expire after 7 days, so the app's PII purge really removes files within a
+    week. Incomplete multipart uploads are aborted after 1 day.
+  - CORS allows GET, HEAD and PUT only from the stage's web and floor origins.
+  - Per-kind retention is the app's purge job. Keys start with `{companyId}/`, so prefix
+    lifecycle rules can't select a kind.
+- **KMS key** `alias/invai-<stage>-field-encryption`, for the backend's KMS field-encryption
+  provider (`FIELD_ENCRYPTION_PROVIDER=kms`, `FIELD_ENCRYPTION_KMS_KEY_ID`). The api, worker and
+  migrate task can Encrypt, Decrypt and GenerateDataKey with it.
+- **SES:**
+  - Sender domain: `<domain>` in production, `<stage>.<domain>` elsewhere, with DKIM, DMARC
+    and a `mail.` MAIL FROM domain.
+  - `MAIL_FROM` is `InvAI <no-reply@<sender domain>>`.
+- **ECS (Fargate, ARM64):**
+  - `Api`: HTTPS on 443 (TLS 1.2/1.3 policy), and HTTP 80 redirects. ALB health is on
+    `/readyz`. It autoscales on CPU 60% and 1,000 requests per target.
+  - `Worker`.
+  - `Imaging`: internal only, reached at `http://<Cloud Map name>:8000`.
+  - A `Migrate` one-off task.
+  - Every container has a `stopTimeout` of 45 s, and target deregistration takes 30 s. The
+    ECS circuit breaker with rollback is on (component default).
+- **Secrets reach containers through SSM SecureString parameters** `/invai/<stage>/<ENV>`, so
+  they are never plaintext in a task definition. Secrets are not `link`ed.
+- **Static sites** `Web` and `Floor` on CloudFront:
+  - A viewer-response function adds the same CSP and security headers that `vite preview` and
+    nginx send.
+  - The web `connect-src` includes the bucket origin
+    `https://<bucket>.s3.<region>.amazonaws.com` (B-190). It is built with the helpers in
+    invai-web's `src/lib/build/csp.ts`.
+- **WAF (production only)**, on the ALB and on both CloudFront distributions:
+  - AWS managed rules: IP reputation, common, and known-bad-inputs.
+  - A per-IP rate rule: 20,000 per 5 minutes on the API, 5,000 on CloudFront, with
+    `/webhooks/` exempt.
+  - The body-size and body-XSS rules only count, because webhook and listing bodies are large
+    and contain HTML.
+
+### Owner inputs (before the first deploy of a stage)
+
+| Input | Consumed as |
+|---|---|
+| AWS account and region | the deploy credentials (profile or OIDC role, `AWS_REGION`); the CloudFront WAF is always `us-east-1` |
+| Registrable domain with a Route 53 hosted zone in the account | env `INVAI_DOMAIN` at deploy time |
+| `BetterAuthSecret` (32+ chars) | `BETTER_AUTH_SECRET` |
+| `FloorTokenSecret` (32+ chars, not the same as the above) | `FLOOR_TOKEN_SECRET` |
+| `FieldEncryptionKey` (`k1:<base64 32 bytes>`) | `FIELD_ENCRYPTION_KEY` |
+| `ImagingSharedSecret` (32+ chars) | `IMAGING_SHARED_SECRET` (api, worker, imaging) |
+| `AppDbPassword` (URL-safe, 32+ chars) | the `invai_app` password in `DATABASE_URL` and the RDS Proxy credential |
+| `AnthropicApiKey`, `EasyPostApiKey`, `EasyPostWebhookSecret`, `ShopifyApiKey`, `ShopifyApiSecret`, `StripeSecretKey`, `StripeWebhookSecret` | the env var with the same name in upper snake case |
+| `SmtpUrl` (`smtps://<SES SMTP user>:<password>@email-smtp.<region>.amazonaws.com:465`) | `SMTP_URL`; needs SES production access |
+
+Set each secret once per stage with SST's secret command. Outside `demo` no secret has a
+placeholder, so a deploy fails while one is missing.
+
+### Release order
+
+`pnpm deploy:staging` (or `deploy:prod`) runs three steps:
+
+1. Deploy only the `Migrate` task and what it needs (`--target Migrate`).
+2. Run it: `pnpm release:migrate:<stage>` runs `infra/run-migrate.ts` inside `sst shell`. The
+   task runs `bootstrap-cli`, then `migrate-cli`, then `reference-seed-cli` from the backend
+   image, and exits non-zero on failure.
+3. Deploy everything else.
+
+If the migration fails, the rollout stops. These steps need AWS credentials, so only the owner
+or CI runs them. `.github/workflows/deploy.yml` still has a placeholder `role-to-assume` and
+doesn't run the migrate step yet (wave 25).
 
 ```
-pnpm install
-pnpm typecheck    # tsc --noEmit — passes; see the tsconfig.json note below
-pnpm deploy:staging
-pnpm deploy:prod
+pnpm typecheck    # tsc --noEmit (sst.config.ts, and the invai-web/invai-floor csp.ts it imports)
+pnpm lint
 ```
-
-**This environment has no AWS credentials, so `sst deploy` is unverified here.** `.github/workflows/deploy.yml`
-runs it in CI instead, via OIDC role assumption (`role-to-assume` is a placeholder ARN —
-`arn:aws:iam::123456789012:role/invai-deploy` — replace it, and the deploy secrets, before
-the workflow can actually run). Triggers: manual (`workflow_dispatch`, choose `staging` or
-`production`) or a `v*` tag push (always `production`).
 
 ### tsconfig.json note
 

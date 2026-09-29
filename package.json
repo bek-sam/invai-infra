@@ -5,8 +5,10 @@
   "description": "InvAI AWS infrastructure (SST) and local dev services",
   "type": "module",
   "scripts": {
-    "deploy:staging": "sst deploy --stage staging",
-    "deploy:prod": "sst deploy --stage production",
+    "deploy:staging": "sst deploy --stage staging --target Migrate && pnpm release:migrate:staging && sst deploy --stage staging",
+    "deploy:prod": "sst deploy --stage production --target Migrate && pnpm release:migrate:prod && sst deploy --stage production",
+    "release:migrate:staging": "sst shell --stage staging -- node infra/run-migrate.ts",
+    "release:migrate:prod": "sst shell --stage production -- node infra/run-migrate.ts",
     "local:up": "docker compose -f local/docker-compose.yml up -d",
     "local:down": "docker compose -f local/docker-compose.yml down",
     "local:full": "docker compose -f local/docker-compose.yml --profile full up -d --build",
