@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# The pre-push test gate (T-23-6). Usage: `pnpm gate [repo...]` from invai-infra, or
+# `bash scripts/gate.sh [repo...]`. With no repo named, runs on every repo that has commits not
+# yet on its origin/main.
+#
+# - Runs typecheck, lint, the full test suite (and `pnpm build` for web/floor; imaging: ruff +
+#   pytest) per repo.
+# - If invai-backend, invai-web or invai-floor is in scope, also resets/migrates/seeds the dev DB
+#   (imaging up) and runs the API golden path, the browser suite and the floor suite.
+# - Refuses to start rather than fight another process (AC3); never kills anything it didn't
+#   start (trap in lib.sh stops only PIDs this run recorded).
+# - On a full pass, writes invai-infra/.gate/pass.json (gitignored) with each repo's HEAD SHA and
+#   a time; guard-bash.py checks this stamp before allowing a push to main.
+#
+# stdout carries only PASS/FAIL lines and the final "log: <path>" line (AC2); everything else
+# (docker waits, refusal reasons) goes to the log file or stderr.
+set -uo pipefail
+
+export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/share/pnpm:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_DIR="$(cd "$INFRA_DIR/.." && pwd)"
+GATE_DIR="$INFRA_DIR/.gate"
+STAMP_FILE="$GATE_DIR/pass.json"
+mkdir -p "$GATE_DIR"
+LOG_FILE="$GATE_DIR/run-$(date -u +%Y%m%dT%H%M%SZ).log"
+: >"$LOG_FILE"
+
+# shellcheck source=gate/lib.sh
+source "$SCRIPT_DIR/gate/lib.sh"
+
+# ---------- repo selection ----------
+
+if [ "$#" -gt 0 ]; then
+  GATE_REPOS=("$@")
+else
+  mapfile -t GATE_REPOS < <(default_repos)
+fi
+
+if [ "${#GATE_REPOS[@]}" -eq 0 ]; then
+  echo "log: $LOG_FILE"
+  log "no repo has commits ahead of origin/main; nothing to do"
+  exit 0
+fi
+
+for r in "${GATE_REPOS[@]}"; do
+  if [ -z "$(repo_kind "$r")" ]; then
+    refuse "unknown repo '$r' (expected one of: ${ALL_REPOS[*]})"
+  fi
+done
+
+needs_golden_path=0
+for r in "${GATE_REPOS[@]}"; do
+  case "$r" in
+    invai-backend|invai-web|invai-floor) needs_golden_path=1 ;;
+  esac
+done
+
+log "gate run: repos=${GATE_REPOS[*]} golden_path=$needs_golden_path"
+
+# ---------- preconditions (AC3) ----------
+
+check_preconditions
+if [ "$needs_golden_path" -eq 1 ]; then
+  check_golden_path_ports
+fi
+
+# ---------- per-repo checks (AC1, AC2) ----------
+
+for r in "${GATE_REPOS[@]}"; do
+  kind="$(repo_kind "$r")"
+  for suite in $(required_checks "$kind"); do
+    run_suite "$r" "$suite"
+  done
+done
+
+# ---------- golden path (AC1) ----------
+
+run_golden_path() {
+  section "golden path: starting invai-infra pnpm dev:all"
+  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
+  local dev_pid=$!
+  STARTED_PIDS+=("$dev_pid")
+
+  if ! wait_healthy postgres || ! wait_healthy valkey || ! wait_healthy minio || ! wait_healthy mailpit; then
+    echo "FAIL golden-path infra: containers did not become healthy, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
+  if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
+      || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
+    echo "FAIL golden-path startup: api/imaging/web/floor did not come up healthy, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
+
+  section "golden path: reset, migrate, seed"
+  local seed_out seed_rc
+  seed_out="$(cd "$WORKSPACE_DIR/invai-backend" && pnpm db:reset && pnpm db:migrate && pnpm db:seed 2>&1)"
+  seed_rc=$?
+  log "$seed_out"
+  if [ $seed_rc -ne 0 ]; then
+    echo "FAIL golden-path seed: db:reset/migrate/seed failed, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
+
+  # Restart the apps once so no worker holds jobs enqueued before the reset (run-golden-path step 5).
+  kill -TERM "$dev_pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$dev_pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$dev_pid" 2>/dev/null && kill -KILL "$dev_pid" 2>/dev/null || true
+  STARTED_PIDS=("${STARTED_PIDS[@]/$dev_pid/}")
+
+  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
+  dev_pid=$!
+  STARTED_PIDS+=("$dev_pid")
+  if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
+      || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
+    echo "FAIL golden-path restart: api/imaging/web/floor did not come back up, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
+
+  section "golden path: API suite"
+  local out rc
+  out="$(cd "$WORKSPACE_DIR/invai-web" && E2E_API=1 pnpm e2e e2e/api-golden-path.spec.ts 2>&1)"
+  rc=$?
+  log "$out"
+  if [ $rc -eq 0 ]; then
+    echo "PASS invai-web api-golden-path $(count_passed "$out") passed"
+  else
+    echo "FAIL invai-web api-golden-path: $(failing_names "$out")"
+    GATE_OVERALL_FAILED=1
+  fi
+
+  section "golden path: browser suite (golden path + screens smoke)"
+  out="$(cd "$WORKSPACE_DIR/invai-web" && pnpm e2e 2>&1)"
+  rc=$?
+  log "$out"
+  if [ $rc -eq 0 ]; then
+    echo "PASS invai-web e2e $(count_passed "$out") passed"
+  else
+    echo "FAIL invai-web e2e: $(failing_names "$out")"
+    GATE_OVERALL_FAILED=1
+  fi
+
+  section "golden path: floor suite"
+  out="$(cd "$WORKSPACE_DIR/invai-floor" && pnpm e2e 2>&1)"
+  rc=$?
+  log "$out"
+  if [ $rc -eq 0 ]; then
+    echo "PASS invai-floor e2e $(count_passed "$out") passed"
+  else
+    echo "FAIL invai-floor e2e: $(failing_names "$out")"
+    GATE_OVERALL_FAILED=1
+  fi
+}
+
+if [ "$needs_golden_path" -eq 1 ]; then
+  run_golden_path
+fi
+
+# ---------- stamp (AC4) ----------
+
+if [ "$GATE_OVERALL_FAILED" -eq 0 ]; then
+  write_stamp
+else
+  log "gate failed: not writing $STAMP_FILE"
+fi
+
+echo "log: $LOG_FILE"
+exit "$GATE_OVERALL_FAILED"

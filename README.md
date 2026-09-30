@@ -29,6 +29,38 @@ pnpm stop         # scripts/stop.sh — stops infra (data volumes kept)
 pnpm reset-db     # scripts/reset-db.sh — wipes and re-initializes Postgres, re-runs migrations
 ```
 
+## Pre-push test gate (T-23-6)
+
+```
+pnpm gate [repo...]   # scripts/gate.sh — no args: every repo with commits not yet on origin/main
+```
+
+Runs `typecheck`, `lint` and the full `test` suite for each repo in scope (`pnpm build` too for
+`invai-web`/`invai-floor`; `invai-imaging` runs `uv run ruff check .` and `uv run pytest`
+instead). If `invai-backend`, `invai-web` or `invai-floor` is in scope, it also resets, migrates
+and seeds the dev database (imaging must be reachable) and runs the API golden path, the browser
+suite and the floor suite — see `run-golden-path` for what that covers.
+
+- Sets its own `TEST_DATABASE_URL`/`TEST_MIGRATION_DATABASE_URL` (`invai_test`) and
+  `TEST_REDIS_URL` (Valkey DB 15) for the backend test run, rather than relying on a shell's
+  exported env.
+- stdout is exactly one line per suite — `PASS <repo> <suite> <n> passed` or
+  `FAIL <repo> <suite>: <failing test names>` — plus a final `log: <path>` line pointing at the
+  full output (`invai-infra/.gate/run-<timestamp>.log`, gitignored). Everything else goes to
+  that log or, for a refusal, to stderr.
+- Refuses to start (exit 1, one-line reason on stderr) if another process already holds the test
+  Postgres DB (`invai_test`) or the test Redis DB (Valkey DB 15) — checked for every run, since
+  `invai-backend`'s `test` suite uses both. When the golden-path phase will run (backend/web/floor
+  in scope), it also refuses if ports 3000/8000/5173/5174 are already held by something this run
+  didn't start. It never kills a process it didn't start, and a trap stops everything it did
+  start even on failure.
+- On a full pass, writes `invai-infra/.gate/pass.json` (gitignored) with each checked repo's HEAD
+  SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` refuses `git push` of a code repo to
+  `main` unless this stamp exists, is under 24 hours old, and records that repo's *current* HEAD
+  SHA — the message it gives points back at `pnpm gate`. `invai-docs` (docs-only) is exempt.
+  A full run resets the shared dev DB, so get a slot from whoever coordinates the gate before
+  running it for real (`run-golden-path`'s "before you start").
+
 ## Local services (infra only)
 
 ```

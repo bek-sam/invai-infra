@@ -15,6 +15,7 @@
     "dev:all": "bash scripts/dev.sh",
     "stop": "bash scripts/stop.sh",
     "reset-db": "bash scripts/reset-db.sh",
+    "gate": "bash scripts/gate.sh",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
   },
