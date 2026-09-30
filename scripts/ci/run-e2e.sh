@@ -16,9 +16,12 @@
 #     the job level, so every process started here inherits them.
 #
 # Order matters (run-golden-path step order): imaging must be up before the seed renders real
-# art, so imaging starts first, then api + worker, then migrate + seed, then web + floor (which
-# don't need seeded data until a browser hits them). Every process is started fresh here (no
-# prior dev.sh pass on this DB), so there is no restart-once dance to do.
+# art, so imaging starts first, then api, then migrate + seed, then the worker, then web + floor
+# (which don't need seeded data until a browser hits them). The worker starts only after the seed
+# finishes — run-golden-path step 5 restarts the apps after a reset "so no worker holds jobs from
+# before the reset"; here that means never starting the worker until the seed (which is itself a
+# fresh reset) is done, so it never processes outbox events queued mid-seed before the data they
+# describe fully exists (T-23-7 review round 1, finding B2).
 set -uo pipefail
 
 export PATH="$HOME/.local/share/pnpm/bin:$HOME/.local/share/pnpm:$PATH"
@@ -85,9 +88,6 @@ log "starting api"
 start api "$WORKSPACE_DIR/invai-backend" node_modules/.bin/tsx src/api/server.ts
 wait_http_ok "http://localhost:$API_PORT/health" api || exit 1
 
-log "starting worker"
-start worker "$WORKSPACE_DIR/invai-backend" node_modules/.bin/tsx src/worker/index.ts
-
 log "migrate"
 ( cd "$WORKSPACE_DIR/invai-backend" && node_modules/.bin/tsx src/db/migrate.ts ) 2>&1 | tee "$LOG_DIR/migrate.log"
 migrate_rc=${PIPESTATUS[0]}
@@ -96,20 +96,46 @@ if [ "$migrate_rc" -ne 0 ]; then
   exit 1
 fi
 
-log "seed (imaging + worker are up, so gang sheets render real art)"
-( cd "$WORKSPACE_DIR/invai-backend" && node_modules/.bin/tsx src/db/seed/index.ts ) 2>&1 | tee "$LOG_DIR/seed.log"
+# No worker is running yet, so nothing consumes outbox events (or holds jobs) while the seed
+# writes data (B2). The seed's own stdout carries secret-shaped lines (the demo password, floor
+# PINs and a freshly issued station token, cleartext, once); redact them before they reach the
+# file this job uploads on failure (S-40). `sed` sits between the command and `tee` so both the
+# live job log and the uploaded seed.log are redacted the same way.
+log "seed (imaging is up, so gang sheets render real art; worker starts after seed, see above)"
+( cd "$WORKSPACE_DIR/invai-backend" && node_modules/.bin/tsx src/db/seed/index.ts ) 2>&1 \
+  | sed -E \
+      -e 's/(demo1234!)/[redacted-password]/g' \
+      -e 's/(st1\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/[redacted-station-token]/g' \
+      -e 's/([a-z0-9]+)=[0-9]{4}/\1=[redacted-pin]/g' \
+  | tee "$LOG_DIR/seed.log"
 seed_rc=${PIPESTATUS[0]}
 if [ "$seed_rc" -ne 0 ]; then
   log "FAIL: db:seed failed, see $LOG_DIR/seed.log"
   exit 1
 fi
 
+log "starting worker (after migrate + seed, so it never holds jobs from before the reset)"
+start worker "$WORKSPACE_DIR/invai-backend" node_modules/.bin/tsx src/worker/index.ts
+
 log "starting web"
 start web "$WORKSPACE_DIR/invai-web" node_modules/.bin/vite --port "$WEB_PORT" --strictPort
 wait_http_ok "http://localhost:$WEB_PORT" web || exit 1
 
-log "starting floor"
-start floor "$WORKSPACE_DIR/invai-floor" node_modules/.bin/vite --port "$FLOOR_PORT" --strictPort
+# Floor's dev-mode CSP is `connect-src 'self'` only: its own vite proxies /rpc and /events
+# same-origin to VITE_API_PROXY (defaults to http://localhost:3000, vite.config.ts:8), so no
+# cross-origin allowance is needed in dev. But floor's client reads an *absolute* API_URL from
+# VITE_API_URL when it's set (src/lib/config.ts) and skips the proxy entirely — which the job's
+# job-level VITE_API_URL (needed by `pnpm build` in ci.yml) does set. The result: floor's dev
+# server would try a cross-origin fetch straight to VITE_API_URL, which its own strict CSP then
+# blocks, and the tablet shows "Can't reach the server" on every request (T-23-7 review round 2,
+# reproduced locally: 3/3 floor spec failures, all at the first station-connect call, CSP-blocked
+# with no network log entry at all). So VITE_API_URL is unset for this one process only, and
+# VITE_API_PROXY follows API_PORT in case a local proof run overrides it.
+log "starting floor (VITE_API_URL unset: dev mode uses floor's same-origin /rpc proxy, not an absolute API origin)"
+( cd "$WORKSPACE_DIR/invai-floor" && unset VITE_API_URL && export VITE_API_PROXY="http://localhost:$API_PORT" && exec node_modules/.bin/vite --port "$FLOOR_PORT" --strictPort ) \
+  >"$LOG_DIR/floor.log" 2>&1 &
+PIDS+=("$!")
+log "started floor (pid $!) in $WORKSPACE_DIR/invai-floor: vite --port $FLOOR_PORT --strictPort"
 wait_http_ok "http://localhost:$FLOOR_PORT" floor || exit 1
 
 export E2E_WEB_URL="${E2E_WEB_URL:-http://localhost:$WEB_PORT}"
