@@ -35,7 +35,11 @@ source "$SCRIPT_DIR/gate/lib.sh"
 if [ "$#" -gt 0 ]; then
   GATE_REPOS=("$@")
 else
-  mapfile -t GATE_REPOS < <(default_repos)
+  # bash 3.2 (the only bash on this machine, see the invai-infra README) has no `mapfile`.
+  GATE_REPOS=()
+  while IFS= read -r r; do
+    [ -n "$r" ] && GATE_REPOS+=("$r")
+  done < <(default_repos)
 fi
 
 if [ "${#GATE_REPOS[@]}" -eq 0 ]; then
@@ -49,6 +53,10 @@ for r in "${GATE_REPOS[@]}"; do
     refuse "unknown repo '$r' (expected one of: ${ALL_REPOS[*]})"
   fi
 done
+
+# Finding 4: capture each repo's HEAD before anything runs, and refuse outright on a dirty
+# tracked tree (the run would be testing something the stamp couldn't honestly describe).
+check_clean_and_capture_shas
 
 needs_golden_path=0
 for r in "${GATE_REPOS[@]}"; do
@@ -79,9 +87,9 @@ done
 
 run_golden_path() {
   section "golden path: starting invai-infra pnpm dev:all"
-  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
-  local dev_pid=$!
-  STARTED_PIDS+=("$dev_pid")
+  local dev_pgid
+  dev_pgid="$(start_dev_all)"
+  STARTED_PIDS+=("$dev_pgid")
 
   if ! wait_healthy postgres || ! wait_healthy valkey || ! wait_healthy minio || ! wait_healthy mailpit; then
     echo "FAIL golden-path infra: containers did not become healthy, see $LOG_FILE"
@@ -106,15 +114,16 @@ run_golden_path() {
     return
   fi
 
-  # Restart the apps once so no worker holds jobs enqueued before the reset (run-golden-path step 5).
-  kill -TERM "$dev_pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$dev_pid" 2>/dev/null || break; sleep 0.5; done
-  kill -0 "$dev_pid" 2>/dev/null && kill -KILL "$dev_pid" 2>/dev/null || true
-  STARTED_PIDS=("${STARTED_PIDS[@]/$dev_pid/}")
+  # Restart the apps once so no worker holds jobs enqueued before the reset (run-golden-path
+  # step 5). Stop the WHOLE process group we started (finding 3): killing only the
+  # `(cd ... && pnpm dev:all)` subshell's own pid never reaches `pnpm` -> `bash dev.sh` ->
+  # `exec concurrently` -> the five app processes, which then keep holding
+  # :3000/:8000/:5173/:5174 underneath the "restarted" stack.
+  stop_group "$dev_pgid"
+  remove_started_pid "$dev_pgid"
 
-  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
-  dev_pid=$!
-  STARTED_PIDS+=("$dev_pid")
+  dev_pgid="$(start_dev_all)"
+  STARTED_PIDS+=("$dev_pgid")
   if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
       || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
     echo "FAIL golden-path restart: api/imaging/web/floor did not come back up, see $LOG_FILE"

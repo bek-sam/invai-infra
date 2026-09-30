@@ -17,20 +17,65 @@ refuse() {
   exit 1
 }
 
+# ---------- process groups (T-23-6 r2 finding 3) ----------
+#
+# `pnpm dev:all` -> `bash dev.sh` -> `exec concurrently` -> api/worker/imaging/web/floor are all
+# descendants of the one subshell we background in start_dev_all. A plain `kill $pid` only
+# reaches that subshell; the rest of the tree survives and keeps holding
+# :3000/:8000/:5173/:5174 (proven by simulation: killing just the parent PID left 3 of 3
+# processes running). `set -m` (job control) makes bash give a backgrounded job its own process
+# group, whose id equals its own pid ($!); signalling the *negative* pid then reaches every
+# process in that group. macOS has no `setsid`, so this - not a `perl -e 'setpgrp; ...'` wrapper -
+# is the portable way to get one here.
+
+start_dev_all() {
+  local was_m=0
+  case $- in *m*) was_m=1 ;; esac
+  set -m
+  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
+  local pgid=$!
+  [ "$was_m" -eq 1 ] || set +m
+  echo "$pgid"
+}
+
+# stop_group <pgid>: TERM then KILL the *group*, never a lone pid, and only a group this run
+# started (STARTED_PIDS only ever holds pgids from start_dev_all).
+stop_group() {
+  local pgid="$1" i
+  [ -z "$pgid" ] && return 0
+  kill -0 "$pgid" 2>/dev/null || return 0
+  kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pgid" 2>/dev/null || return 0
+    sleep 0.5
+  done
+  kill -KILL -- "-$pgid" 2>/dev/null || kill -KILL "$pgid" 2>/dev/null || true
+}
+
+# remove_started_pid <pgid>: drop one id from STARTED_PIDS (bash 3.2 has no easy "remove by
+# value" for arrays; `${arr[@]/pat/}` blanks rather than removes and can mangle other numeric
+# entries by substring, so rebuild the array instead).
+remove_started_pid() {
+  local target="$1" kept=() p
+  for p in "${STARTED_PIDS[@]:-}"; do
+    [ -z "$p" ] && continue
+    [ "$p" = "$target" ] && continue
+    kept+=("$p")
+  done
+  if [ "${#kept[@]}" -eq 0 ]; then
+    STARTED_PIDS=()
+  else
+    STARTED_PIDS=("${kept[@]}")
+  fi
+}
+
 # ---------- cleanup: stop only what this run started ----------
 
 cleanup() {
   local pid
   for pid in "${STARTED_PIDS[@]:-}"; do
     [ -z "$pid" ] && continue
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.5
-      done
-      kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
-    fi
+    stop_group "$pid"
   done
 }
 trap cleanup EXIT
@@ -97,6 +142,25 @@ default_repos() {
     if [ "$ahead" != "0" ]; then
       echo "$repo"
     fi
+  done
+}
+
+# ---------- start-of-run SHA capture + dirty-tree refusal (T-23-6 r2 finding 4) ----------
+#
+# Populates the global START_SHAS array, one entry per GATE_REPOS at the same index, so
+# write_stamp can refuse to record a commit that never actually finished the run: a commit made
+# to a repo *during* the run (HEAD moved) or a tracked-file edit left uncommitted (tree dirty at
+# the end), either one before the run's own read of HEAD at the end.
+check_clean_and_capture_shas() {
+  local r dir dirty
+  START_SHAS=()
+  for r in "${GATE_REPOS[@]}"; do
+    dir="$WORKSPACE_DIR/$r"
+    dirty="$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null || echo x)"
+    if [ -n "$dirty" ]; then
+      refuse "$r has uncommitted tracked changes; commit them first (gating a dirty tree could stamp a commit that was never fully tested)"
+    fi
+    START_SHAS+=("$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")")
   done
 }
 
@@ -207,17 +271,27 @@ wait_http_ok() {
   return 1
 }
 
-# ---------- stamp (AC4) ----------
+# ---------- stamp (AC4, T-23-6 r2 finding 4) ----------
+#
+# Stamps a repo only if its HEAD at the end still equals the START_SHAS entry captured before
+# any suite ran, and its tracked tree is still clean: a commit or edit mid-run means the tree the
+# suites actually tested is not the tree at the end, so there is nothing honest to stamp.
 
 write_stamp() {
-  local repo dir sha now entries=()
+  local repo dir sha now entries=() i=0 dirty
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$GATE_DIR"
   for repo in "${GATE_REPOS[@]}"; do
     dir="$WORKSPACE_DIR/$repo"
     sha="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo "")"
-    [ -z "$sha" ] && continue
+    dirty="$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null || echo x)"
+    if [ -z "$sha" ] || [ "$sha" != "${START_SHAS[$i]:-}" ] || [ -n "$dirty" ]; then
+      log "not stamping $repo: the tree changed during the run (start sha ${START_SHAS[$i]:-<none>}, end sha ${sha:-<none>}${dirty:+, dirty at end})"
+      i=$((i + 1))
+      continue
+    fi
     entries+=("\"$repo\":{\"sha\":\"$sha\",\"at\":\"$now\"}")
+    i=$((i + 1))
   done
   {
     printf '{"repos":{'
