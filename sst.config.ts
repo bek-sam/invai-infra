@@ -297,6 +297,28 @@ export default $config({
       return undefined;
     };
 
+    // S-45: SST's stock execution role reads SSM and Secrets Manager on "*". Every ECS task here
+    // gets the same replacement inline policy instead: SSM reads of its own stage's
+    // `/invai/<stage>/*` only, no Secrets Manager (unused). The managed
+    // AmazonECSTaskExecutionRolePolicy (ECR pull, logs) stays. Helper: infra/execution-role.ts.
+    const { executionRolePolicy } = await import("./infra/execution-role");
+    const executionRole = {
+      inlinePolicies: [
+        {
+          name: "inline",
+          policy: $resolve([
+            aws.getPartitionOutput().partition,
+            region,
+            aws.getCallerIdentityOutput().accountId,
+          ]).apply(([partition, regionName, accountId]) =>
+            JSON.stringify(
+              executionRolePolicy({ partition, region: regionName, accountId, stage }),
+            ),
+          ),
+        },
+      ],
+    };
+
     // Imaging: internal only, no load balancer. Reached through Cloud Map service discovery
     // (`imaging.service`); `imaging.url` throws for a service with no public port (B-57).
     const imaging = new sst.aws.Service("Imaging", {
@@ -331,7 +353,7 @@ export default $config({
         startPeriod: "30 seconds",
       },
       scaling: { min: 1, max: isProd ? 3 : 1, cpuUtilization: 70 },
-      transform: { taskDefinition: withStopTimeout },
+      transform: { taskDefinition: withStopTimeout, executionRole },
     });
     const imagingUrl = $interpolate`http://${imaging.service}:8000`;
 
@@ -401,6 +423,7 @@ export default $config({
       },
       transform: {
         taskDefinition: withStopTimeout,
+        executionRole,
         listener: (args) => {
           if (args.protocol === "HTTPS") args.sslPolicy = "ELBSecurityPolicy-TLS13-1-2-2021-06";
         },
@@ -422,7 +445,7 @@ export default $config({
       environment: backendEnvironment,
       ssm: backendSsm,
       scaling: { min: 1, max: 1 },
-      transform: { taskDefinition: withStopTimeout },
+      transform: { taskDefinition: withStopTimeout, executionRole },
     });
 
     // One-off release task (wave 24 agreed interface, B-59): bootstrap `invai_app` -> migrate
@@ -445,6 +468,7 @@ export default $config({
       environment: backendEnvironment,
       ssm: backendSsm,
       dev: false,
+      transform: { executionRole },
     });
 
     // ---- Static sites (CloudFront) -------------------------------------------------------

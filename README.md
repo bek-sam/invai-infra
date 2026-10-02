@@ -152,6 +152,12 @@ the guard hook blocks deploys, secret changes and AWS CLI calls for agents.
     ECS circuit breaker with rollback is on (component default).
 - **Secrets reach containers through SSM SecureString parameters** `/invai/<stage>/<ENV>`, so
   they are never plaintext in a task definition. Secrets are not `link`ed.
+- **Execution roles read only their own stage's secrets** (S-45). SST's stock execution role
+  reads SSM and Secrets Manager on `*`; `Api`, `Worker`, `Imaging` and `Migrate` replace its
+  inline policy with `infra/execution-role.ts`: `ssm:GetParameter(s)/GetParameterHistory` on
+  `arn:<partition>:ssm:<region>:<account>:parameter/invai/<stage>/*`, no Secrets Manager. The
+  managed `AmazonECSTaskExecutionRolePolicy` (ECR pull, logs) is unchanged. Print the policy
+  for sample values without AWS: import `executionRolePolicy` from that file with `node`.
 - **Static sites** `Web` and `Floor` on CloudFront:
   - A viewer-response function adds the same CSP and security headers that `vite preview` and
     nginx send.
