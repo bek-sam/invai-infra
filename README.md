@@ -55,9 +55,17 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   didn't start. It never kills a process it didn't start, and a trap stops everything it did
   start even on failure.
 - On a full pass, writes `invai-infra/.gate/pass.json` (gitignored) with each checked repo's HEAD
-  SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` refuses `git push` of a code repo to
-  `main` unless this stamp exists, is under 24 hours old, and records that repo's *current* HEAD
-  SHA — the message it gives points back at `pnpm gate`. `invai-docs` (docs-only) is exempt.
+  SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` allows a code repo to be pushed in
+  exactly one form, as the whole Bash command with nothing before or after it (no `cd`, `&&`, `;`,
+  `|`, `2>&1`, `$(...)`, `bash -c`, env prefix, `~` or relative path):
+  ```
+  git -C /Users/bekbolsun/invai/<repo> push origin main
+  git -C /Users/bekbolsun/invai/<repo> push origin <sha>:main     # 7-40 hex characters
+  ```
+  and only when this stamp exists, is under 24 hours old, and records the commit being pushed;
+  its messages point back at `pnpm gate`. Every other push form is refused (owner decision OI-22).
+  `invai-docs` (docs-only) needs no stamp but is pushed only as
+  `git -C /Users/bekbolsun/invai/invai-docs push origin main`.
   A full run resets the shared dev DB, so get a slot from whoever coordinates the gate before
   running it for real (`run-golden-path`'s "before you start").
 
