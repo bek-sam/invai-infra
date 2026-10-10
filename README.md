@@ -139,11 +139,12 @@ job -> imaging in a local Jaeger:
 
 ```
 cd local && docker compose --profile observability up -d     # Jaeger 2.21, 127.0.0.1:4318 (OTLP/HTTP) and :16686 (UI)
-cd .. && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OPENAI_API_KEY= ANTHROPIC_API_KEY= pnpm dev:all
+cd .. && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 pnpm dev:all
 # ... do something, e.g. build a gang sheet, then open http://127.0.0.1:16686
-cd local && docker compose --profile observability down       # traces live in memory only
+cd local && docker compose stop jaeger && docker compose rm -f jaeger   # traces live in memory only; never `down` (it stops Postgres, Valkey, MinIO, Mailpit too)
 ```
 
+- Keep the OpenAI and Anthropic key variables set to empty strings in that shell (an empty value, not unset: `invai-backend/.env` may hold real keys), so the mock providers stay on.
 - The endpoint must be in the **shell environment**, not in `invai-backend/.env`: the backend starts
   its tracer with `node --import` before `.env` is read. Service names default to `invai-api`,
   `invai-worker` and `invai-imaging` (`OTEL_SERVICE_NAME` overrides; don't set it for `dev:all`, or

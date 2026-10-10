@@ -23,7 +23,30 @@
       "reason": "false positive in one historical commit: the first scan report quoted a command that blanks the AI keys (empty assignments, no value). Local history is not rewritten; the line is reworded in the next commit. Exact path + rule + commit + line",
       "owner": "platform-sre",
       "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "infra-blank-key-readme-745e5f9",
+      "rule": "generic-api-key",
+      "targets": ["invai-infra"],
+      "path_regex": "^README\\.md$",
+      "line_regex": "OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=\\s+\\S",
+      "commits": ["745e5f9519a29b61a8aadfc45988f7435de0a292"],
+      "reason": "false positive in one historical commit: the observability section quoted a command that blanks the AI keys (empty assignments, no value); gitleaks reads the next word as the value. Reworded in the next commit. Exact path + rule + commit + line",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "docs-blank-key-qa-report-82037c4",
+      "rule": "generic-api-key",
+      "targets": ["invai-docs"],
+      "path_regex": "^build/qa-report\\.md$",
+      "line_regex": "OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=`",
+      "commits": ["82037c40489d41a601a40b39000cc3e5120c76cd"],
+      "reason": "false positive in one historical commit: the QA report quoted a command that blanks the AI keys (empty assignments, no value). Reworded in docs f577d27. Exact path + rule + commit + line",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
     }
-
   ]
 }
