@@ -2,14 +2,6 @@
   "_comment": "The only ignore list for `pnpm scan` and the CI scan jobs. Every entry needs tool, id, targets, reason, owner and expires (YYYY-MM-DD, at most 190 days out). Targets: a repo name, or image:<backend|imaging|web|floor>. An expired entry fails the scan. After editing run: bash scripts/scan.sh sync (rewrites each repo's .github/trivyignore.yaml for CI). HIGH fix clock: 30 days from 2026-10-10.",
   "ignores": [
     {
-      "tool": "trivy",
-      "id": "CVE-2026-93749",
-      "targets": ["invai-contracts", "invai-ui", "invai-backend", "invai-web", "invai-floor", "image:backend"],
-      "reason": "source-map-js 1.2.1 (HIGH, fixed 1.2.2) comes in through postcss/vite in each lockfile; the bump touches another owner's pnpm-lock.yaml, so it is a card for each owner (ops/scans/2026-10-10.md)",
-      "owner": "architect (contracts), product-designer (ui), backend-foundation (backend), web-engineer (web), floor-engineer (floor)",
-      "expires": "2026-11-09"
-    },
-    {
       "tool": "gitleaks",
       "id": "docs-blank-key-examples",
       "rule": "generic-api-key",

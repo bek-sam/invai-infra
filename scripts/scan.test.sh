@@ -29,8 +29,11 @@ E
 expect_rc 1 "an ignore that expires far in the future fails" $PY check "$T/far.json"
 
 # 2. generated tool configs carry the expiry
-$PY trivy "$INFRA_DIR/scan/ignores.json" invai-ui >"$T/t.yaml"
-grep -q 'expired_at: 2026-11-09' "$T/t.yaml" && grep -q 'CVE-2026-93749' "$T/t.yaml" && ok "trivy ignore file has id and expired_at" || bad "trivy ignore file"
+cat >"$T/sample.json" <<'E2'
+{"ignores":[{"tool":"trivy","id":"CVE-2000-0001","targets":["invai-ui"],"reason":"sample","owner":"x","expires":"2026-11-09"}]}
+E2
+$PY trivy "$T/sample.json" invai-ui >"$T/t.yaml"
+grep -q 'expired_at: 2026-11-09' "$T/t.yaml" && grep -q 'CVE-2000-0001' "$T/t.yaml" && ok "trivy ignore file has id and expired_at" || bad "trivy ignore file"
 $PY gitleaks "$INFRA_DIR/scan/ignores.json" invai-docs >"$T/g.toml"
 grep -q 'useDefault = true' "$T/g.toml" && grep -q 'targetRules' "$T/g.toml" && ok "gitleaks config extends defaults and scopes by rule" || bad "gitleaks config"
 $PY gitleaks "$INFRA_DIR/scan/ignores.json" invai-backend >"$T/g2.toml"
