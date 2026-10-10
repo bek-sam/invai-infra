@@ -9,6 +9,7 @@
   ignores.py check-ci <ignores.json> <workspace>          fail if a repo's copy has drifted
   ignores.py pins   <workspace> <repo>...                 workflow rules: every `uses:` is a 40-hex
                                                           SHA, every workflow has top-level permissions
+  ignores.py expect <json> file <name>|image                (fail unless trivy listed that target)
   ignores.py summary <json>...                            (used by scan.sh) counts from trivy/gitleaks JSON
 
 Targets are repo names (invai-backend) or image names (image:backend). One ignore file for the whole
@@ -198,6 +199,27 @@ def summary(paths):
     return 1 if total else 0
 
 
+def expect(path, kind, value=""):
+    """Fail closed: the trivy JSON must prove the expected target was scanned (S-63).
+    kind 'file': a Result whose Target is `value` (or ends in /value); kind 'image': an os-pkgs Result."""
+    try:
+        d = json.load(open(path))
+    except (OSError, ValueError) as e:
+        print("SCANNED NOTHING: cannot read %s (%s)" % (os.path.basename(path), e))
+        return 1
+    results = d.get("Results") or []
+    if kind == "file":
+        hit = any(r.get("Target") == value or str(r.get("Target", "")).endswith("/" + value) for r in results)
+        what = "lockfile %s" % value
+    else:
+        hit = any(r.get("Class") == "os-pkgs" for r in results)
+        what = "the image's operating-system packages"
+    if not hit:
+        print("SCANNED NOTHING: %s does not list %s in its results (empty folder or renamed file?)" % (os.path.basename(path), what))
+        return 1
+    return 0
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "check":
@@ -214,6 +236,8 @@ def main(argv):
         return sync_ci(argv[2], argv[3], False)
     if cmd == "pins":
         return pins(argv[2], argv[3:])
+    if cmd == "expect":
+        return expect(argv[2], argv[3], argv[4] if len(argv) > 4 else "")
     if cmd == "summary":
         return summary(argv[2:])
     print(__doc__)

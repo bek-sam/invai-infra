@@ -48,7 +48,10 @@ mkdir -p "$OUT/tree"
 tree_export() {
   local repo="$1" dest="$OUT/tree/$1"
   mkdir -p "$dest"
-  git -C "$WS/$repo" ls-files -co --exclude-standard -z | tar -C "$WS/$repo" --null -T - -cf - 2>/dev/null | tar -xf - -C "$dest"
+  # pipefail is on: a git or tar error fails the export, and so does an empty result (S-63).
+  git -C "$WS/$repo" ls-files -co --exclude-standard -z | tar -C "$WS/$repo" --null -T - -cf - 2>"$OUT/tree-$repo.err" | tar -xf - -C "$dest" 2>>"$OUT/tree-$repo.err" \
+    || { echo "   could not export $repo (see $OUT/tree-$repo.err)"; return 1; }
+  [ -n "$(find "$dest" -type f -print -quit)" ] || { echo "   exported tree of $repo is empty: nothing to scan"; return 1; }
 }
 
 # ---- ignores ------------------------------------------------------------------------------------
@@ -70,7 +73,7 @@ step_secrets() {
     docker run --rm -v "$WS/$repo:/repo:ro" -v "$OUT:/out" "$GITLEAKS_IMAGE" git /repo \
       -c "/out/gl-$repo.toml" --redact --no-banner -f json -r "/out/gl-$repo-git.json" --exit-code 0 >/dev/null 2>"$OUT/gl-$repo-git.err" \
       || { echo "   gitleaks failed on $repo history (see $OUT/gl-$repo-git.err)"; fail "secrets-$repo-run"; continue; }
-    tree_export "$repo"
+    tree_export "$repo" || { fail "secrets-$repo-export"; continue; }
     docker run --rm -v "$OUT/tree/$repo:/src:ro" -v "$OUT:/out" "$GITLEAKS_IMAGE" dir /src \
       -c "/out/gl-$repo.toml" --redact --no-banner -f json -r "/out/gl-$repo-tree.json" --exit-code 0 >/dev/null 2>"$OUT/gl-$repo-tree.err" \
       || { echo "   gitleaks failed on $repo tree (see $OUT/gl-$repo-tree.err)"; fail "secrets-$repo-run"; continue; }
@@ -103,12 +106,14 @@ step_deps() {
   local repo lock
   for repo in $CODE_REPOS; do
     lock="pnpm-lock.yaml"; [ -f "$WS/$repo/uv.lock" ] && lock="uv.lock"
-    tree_export "$repo"
+    tree_export "$repo" || { fail "deps-$repo-export"; continue; }
+    [ -f "$OUT/tree/$repo/$lock" ] || { echo "   $repo: $lock is missing from the exported tree"; fail "deps-$repo-lockfile"; continue; }
     $PY trivy "$IGN" "$repo" >"$OUT/ti-$repo.yaml"
     docker run --rm -v "$CACHE/trivy:/root/.cache" -v "$OUT/tree/$repo:/src:ro" -v "$OUT:/out" "$TRIVY_IMAGE" fs /src \
       --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --include-dev-deps --ignorefile /out/ti-$repo.yaml \
       -f json -o "/out/tv-$repo.json" --quiet >/dev/null 2>"$OUT/tv-$repo.err" \
       || { echo "   trivy failed on $repo (see $OUT/tv-$repo.err)"; fail "deps-$repo-run"; continue; }
+    $PY expect "$OUT/tv-$repo.json" file "$lock" || { fail "deps-$repo-empty"; continue; }
     printf '   %-16s %-15s %s\n' "$repo" "$lock" "$(trivy_count "$OUT/tv-$repo.json")"
     trivy_json_table "$repo" "$OUT/tv-$repo.json"
     $PY summary "$OUT/tv-$repo.json" >/dev/null || fail "deps-$repo"
@@ -133,6 +138,7 @@ step_images() {
       -f json -o "/out/ti-$n.json" --quiet >/dev/null 2>"$OUT/ti-$n.err" \
       || { echo "   trivy failed on image $n (see $OUT/ti-$n.err)"; fail "images-$n-run"; rm -f "$OUT/img-$n.tar"; continue; }
     rm -f "$OUT/img-$n.tar"
+    $PY expect "$OUT/ti-$n.json" image || { fail "images-$n-empty"; continue; }
     printf '   %-16s %s\n' "image:$n" "$(trivy_count "$OUT/ti-$n.json")"
     trivy_json_table "image:$n" "$OUT/ti-$n.json"
     $PY summary "$OUT/ti-$n.json" >/dev/null || fail "images-$n"
