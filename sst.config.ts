@@ -453,7 +453,7 @@ export default $config({
     // One-off release task (wave 24 agreed interface, B-59): bootstrap `invai_app` -> migrate
     // -> reference seed, each an idempotent CLI from T-24-2. It connects as the owner role
     // (MIGRATION_DATABASE_URL) and reads the app role's name and password from DATABASE_URL.
-    // Run it before every rollout: `pnpm release:migrate --stage <stage>` (infra/run-migrate.ts).
+    // Run it before every rollout: `pnpm release:migrate:demo` (or `:staging`, `:prod`; infra/run-migrate.ts).
     const migrate = new sst.aws.Task("Migrate", {
       cluster,
       architecture: "arm64",

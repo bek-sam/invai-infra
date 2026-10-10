@@ -5,9 +5,9 @@ on:
       stage:
         description: "SST stage to deploy"
         required: true
-        default: staging
+        default: demo
         type: choice
-        options: [staging, production]
+        options: [demo, staging, production]
   push:
     tags: ["v*"]
 
@@ -16,12 +16,41 @@ permissions:
   id-token: write
   contents: read
 
+# One deploy per stage at a time; a running deploy is never cancelled (it would leave the SST lock held).
+concurrency:
+  group: deploy-${{ github.event_name == 'push' && 'production' || inputs.stage }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Tag pushes deploy production; workflow_dispatch uses the chosen stage (default staging).
+    timeout-minutes: 120
+    # Tag pushes deploy production; workflow_dispatch uses the chosen stage (default demo).
+    # The environment name is the OIDC subject (repo:bek-sam/invai-infra:environment:<stage>)
+    # and the source of the two variables below. Both are set by the owner (OI-38).
     environment: ${{ github.event_name == 'push' && 'production' || inputs.stage }}
+    env:
+      # Job-level so both `sst deploy` and `sst shell` (the release task) see them.
+      INVAI_DOMAIN: ${{ vars.INVAI_DOMAIN }}
+      INVAI_OTEL_ENDPOINT: ${{ vars.INVAI_OTEL_ENDPOINT }}
+      STAGE: ${{ github.event_name == 'push' && 'production' || inputs.stage }}
     steps:
+      - name: Check settings before touching AWS
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          case "$STAGE" in
+            demo|staging|production) ;;
+            *) echo "::error::Unknown stage '$STAGE'. Use demo, staging or production."; exit 1 ;;
+          esac
+          if [ -z "$INVAI_DOMAIN" ]; then
+            echo "::error::The variable INVAI_DOMAIN is not set on the '$STAGE' environment (GitHub, Settings, Environments)."
+            exit 1
+          fi
+          if [ -z "$AWS_DEPLOY_ROLE_ARN" ]; then
+            echo "::error::The variable AWS_DEPLOY_ROLE_ARN is not set on the '$STAGE' environment (GitHub, Settings, Environments)."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: invai-infra
@@ -82,15 +111,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: invai-floor
 
-      # Placeholder role ARN — replace with the real deploy role before this workflow can run.
-      # Trust policy: token.actions.githubusercontent.com, audience sts.amazonaws.com,
-      # subject restricted to this repo (e.g. repo:bek-sam/invai-infra:ref:refs/tags/v*
-      # and repo:bek-sam/invai-infra:environment:staging/production).
+      # OIDC: the role trusts only the environment subject (infra/iam/deploy-trust-*.json).
+      # Two hours so a first deploy plus the release task cannot outlive the session.
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
-          role-to-assume: arn:aws:iam::123456789012:role/invai-deploy
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-duration-seconds: 7200
           aws-region: us-east-1
 
-      - name: sst deploy
+      # The same package scripts a laptop runs: Migrate target, release task, full deploy.
+      - name: Deploy (migrate, release task, full deploy)
         working-directory: invai-infra
-        run: pnpm exec sst deploy --stage ${{ github.event_name == 'push' && 'production' || inputs.stage }}
+        run: |
+          case "$STAGE" in
+            demo) pnpm deploy:demo ;;
+            staging) pnpm deploy:staging ;;
+            production) pnpm deploy:prod ;;
+            *) echo "::error::Unknown stage '$STAGE'."; exit 1 ;;
+          esac
