@@ -3,9 +3,9 @@
 # The `full` profile also builds and runs migrate, api, worker, imaging, web and floor from the
 # sibling repos' Dockerfiles, against its OWN database (invai_full), Valkey DB 9 and bucket
 # invai-full, so it never touches the shared dev data. Drive it with scripts/full.sh (one image
-# at a time, seed, down), not with a bare `docker compose up`. The four app ports of the profile bind
-# to 127.0.0.1 only (S-62): the placeholder secrets, demo logins and imaging dev endpoints are not
-# reachable from the LAN. The infra services above keep their all-interface ports (existing dev flow).
+# at a time, seed, down), not with a bare `docker compose up`. Every published port, infra and
+# the profile's four app ports, binds to 127.0.0.1 only (S-62, B-322): the default dev passwords,
+# placeholder secrets, demo logins and imaging dev endpoints are not reachable from the LAN.
 name: local
 
 services:
@@ -15,7 +15,7 @@ services:
       POSTGRES_USER: invai
       POSTGRES_PASSWORD: invai
       POSTGRES_DB: invai
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -28,7 +28,7 @@ services:
   valkey:
     image: valkey/valkey:8
     command: ["valkey-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -46,7 +46,7 @@ services:
       # (per-bucket CORS) returns NotImplemented on this server version, so `mc cors set` /
       # `aws s3api put-bucket-cors` cannot be used here; the env var is the supported path.
       MINIO_API_CORS_ALLOW_ORIGIN: "*"
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
     volumes:
       - miniodata:/data
     healthcheck:
@@ -75,7 +75,7 @@ services:
   # SMTP catcher for vendor and invite emails. UI at :8025, SMTP at :1025 (no auth).
   mailpit:
     image: axllent/mailpit:latest
-    ports: ["1025:1025", "8025:8025"]
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
       interval: 5s

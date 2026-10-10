@@ -76,6 +76,8 @@ pnpm local:up     # Postgres 17 + pgvector (5432), Valkey (6379, noeviction), Mi
 pnpm local:down
 ```
 
+Every port above is published on `127.0.0.1` only, not on the LAN (B-322). Containers started before this change keep their old all-interface binding until they are recreated (`docker compose up -d` in `local/`).
+
 `local/docker-compose.yml` (compose project `local`):
 
 - **postgres** — `pgvector/pgvector:pg17`. `local/init.sql` creates two databases, `invai`

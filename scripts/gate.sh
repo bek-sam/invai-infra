@@ -89,19 +89,24 @@ done
 # ---------- golden path (AC1) ----------
 
 run_golden_path() {
-  section "golden path: starting invai-infra pnpm dev:all"
-  local dev_pgid
-  dev_pgid="$(start_dev_all)"
-  STARTED_PIDS+=("$dev_pgid")
-
+  # Order matters (B-321): nothing but imaging runs while db:reset/migrate/seed run, so no worker
+  # holds or races jobs from before the reset. The full dev group starts only after the seed.
+  section "golden path: infra, then imaging alone for the seed"
+  if ! (cd "$INFRA_DIR/local" && docker compose up -d) >>"$LOG_FILE" 2>&1; then
+    echo "FAIL golden-path infra: docker compose up failed, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
   if ! wait_healthy postgres || ! wait_healthy valkey || ! wait_healthy minio || ! wait_healthy mailpit; then
     echo "FAIL golden-path infra: containers did not become healthy, see $LOG_FILE"
     GATE_OVERALL_FAILED=1
     return
   fi
-  if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
-      || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
-    echo "FAIL golden-path startup: api/imaging/web/floor did not come up healthy, see $LOG_FILE"
+  local img_pgid
+  img_pgid="$(start_imaging)"
+  STARTED_PIDS+=("$img_pgid")
+  if ! wait_http_ok "http://localhost:8000/health"; then
+    echo "FAIL golden-path imaging: did not come up healthy, see $LOG_FILE"
     GATE_OVERALL_FAILED=1
     return
   fi
@@ -117,19 +122,18 @@ run_golden_path() {
     return
   fi
 
-  # Restart the apps once so no worker holds jobs enqueued before the reset (run-golden-path
-  # step 5). Stop the WHOLE process group we started (finding 3): killing only the
-  # `(cd ... && pnpm dev:all)` subshell's own pid never reaches `pnpm` -> `bash dev.sh` ->
-  # `exec concurrently` -> the five app processes, which then keep holding
-  # :3000/:8000/:5173/:5174 underneath the "restarted" stack.
-  stop_group "$dev_pgid"
-  remove_started_pid "$dev_pgid"
+  # Stop the imaging group (own process group), then start the whole stack once. The group is
+  # stopped as a group so nothing keeps :8000 under the new imaging.
+  stop_group "$img_pgid"
+  remove_started_pid "$img_pgid"
 
+  section "golden path: starting invai-infra pnpm dev:all (after the seed)"
+  local dev_pgid
   dev_pgid="$(start_dev_all)"
   STARTED_PIDS+=("$dev_pgid")
   if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
       || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
-    echo "FAIL golden-path restart: api/imaging/web/floor did not come back up, see $LOG_FILE"
+    echo "FAIL golden-path startup: api/imaging/web/floor did not come up healthy, see $LOG_FILE"
     GATE_OVERALL_FAILED=1
     return
   fi

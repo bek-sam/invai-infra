@@ -38,6 +38,19 @@ start_dev_all() {
   echo "$pgid"
 }
 
+# start_imaging: imaging alone, in its own process group, for the golden-path seed (the seed
+# renders real art through it). Prints the group id. No api/worker may run during reset/seed
+# (B-321/B-317: a live worker races the seed's market.sweep).
+start_imaging() {
+  local was_m=0
+  case $- in *m*) was_m=1 ;; esac
+  set -m
+  (cd "$WORKSPACE_DIR/invai-imaging" && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000) >>"$LOG_FILE" 2>&1 &
+  local pgid=$!
+  [ "$was_m" -eq 1 ] || set +m
+  echo "$pgid"
+}
+
 # stop_group <pgid>: TERM then KILL the *group*, never a lone pid, and only a group this run
 # started (STARTED_PIDS only ever holds pgids from start_dev_all).
 stop_group() {

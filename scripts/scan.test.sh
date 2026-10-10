@@ -89,5 +89,40 @@ else
   echo "skip - canary cases (docker not reachable)"
 fi
 
+# 6. the blank-key docs ignore is anchored (B-318, S-64): only a pair of EMPTY assignments is
+# skipped; a real token on the same line must still be reported. Runs the pinned gitleaks image
+# against the generated config. $1 = ignores file. Prints the number of findings per case file.
+# Lines are built from pieces so this file never holds a blank-key command or a token itself.
+gl_cases() {
+  local ign="$1" d="$T/glcase-$2" k1="OPENAI_API""_KEY" k2="ANTHROPIC_API""_KEY" tok="Qx7pL2mVn9Rt4KsB8wZc3HjD5fY"
+  rm -rf "$d"; mkdir -p "$d/src/waves"
+  printf 'run with %s= %s= caffeinate -i pnpm gate and E2E_API=1 afterwards\n' "$k1" "$k2" >"$d/src/waves/blank.md"
+  printf '%s= %s=%s\n' "$k1" "$k2" "$tok" >"$d/src/waves/token-second.md"
+  printf '%s= %s= FOO=%s\n' "$k1" "$k2" "$tok" >"$d/src/waves/token-foo.md"
+  python3 "$INFRA_DIR/scan/ignores.py" gitleaks "$ign" invai-docs >"$d/gl.toml"
+  local img; img="$(sed -n 's/^GITLEAKS_IMAGE=//p' "$INFRA_DIR/scan/tools.env")"
+  docker run --rm -v "$d/src:/src:ro" -v "$d:/out" "$img" dir /src -c /out/gl.toml --redact --no-banner -f json -r /out/r.json --exit-code 0 >/dev/null 2>&1
+  python3 - "$d/r.json" <<'PYE'
+import json, sys
+f = {r["File"].rsplit("/", 1)[-1] for r in json.load(open(sys.argv[1]))}
+print(" ".join(sorted(f)))
+PYE
+}
+if docker info >/dev/null 2>&1; then
+  python3 - "$INFRA_DIR/scan/ignores.json" "$T/old-ignores.json" <<'PYO'
+import json, sys
+old = json.load(open(sys.argv[1]))
+# the pre-B-318 regex, kept only to prove the new cases are red on it
+old["ignores"][0]["line_regex"] = '(OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=|STRIPE_WEBHOOK_SECRET=" ")'
+json.dump(old, open(sys.argv[2], "w"))
+PYO
+  got_new="$(gl_cases "$INFRA_DIR/scan/ignores.json" new)"
+  got_old="$(gl_cases "$T/old-ignores.json" old)"
+  [ "$got_new" = "token-foo.md token-second.md" ] && ok "anchored docs ignore: blank-only line skipped, both token lines reported" || bad "anchored ignore reported: '$got_new'"
+  case "$got_old" in *token-second.md*|*token-foo.md*) bad "old regex unexpectedly reported: '$got_old'" ;; *) ok "old unanchored regex hides both token lines (red on old, green on new)" ;; esac
+else
+  echo "skip - gitleaks anchor cases (docker not reachable)"
+fi
+
 echo "$pass passed, $failn failed"
 [ "$failn" = "0" ]

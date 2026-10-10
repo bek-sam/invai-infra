@@ -373,8 +373,9 @@ export default $config({
       S3_FORCE_PATH_STYLE: "false",
       S3_PUBLIC_ENDPOINT: s3PublicEndpoint,
       MAIL_FROM: `InvAI <no-reply@${mailDomain}>`,
-      // T-24-2's KMS envelope provider; the static FIELD_ENCRYPTION_KEY stays in the key ring.
-      FIELD_ENCRYPTION_PROVIDER: "kms",
+      // Static key ring until the KMS adapter is built: the backend refuses "kms" today. B-327 switches this back to "kms".
+      FIELD_ENCRYPTION_PROVIDER: "static",
+      // Not read by the backend while the provider is static; kept for B-327.
       FIELD_ENCRYPTION_KMS_KEY_ID: fieldEncryptionKmsKey.arn,
       // RDS CA bundle baked into the backend image (T-24-3) for sslmode=verify-full.
       NODE_EXTRA_CA_CERTS: "/app/certs/rds-global-bundle.pem",
