@@ -54,6 +54,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: invai-infra
+          persist-credentials: false
       # sst.config.ts builds container images and static sites from these sibling repos —
       # same layout as local dev (all repos checked out side by side). Each needs a
       # read-only deploy key secret, same approach the app repos' own CI uses for
@@ -63,31 +64,37 @@ jobs:
           repository: bek-sam/invai-backend
           path: invai-backend
           ssh-key: ${{ secrets.BACKEND_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-imaging
           path: invai-imaging
           ssh-key: ${{ secrets.IMAGING_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-web
           path: invai-web
           ssh-key: ${{ secrets.WEB_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-floor
           path: invai-floor
           ssh-key: ${{ secrets.FLOOR_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-contracts
           path: invai-contracts
           ssh-key: ${{ secrets.CONTRACTS_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-ui
           path: invai-ui
           ssh-key: ${{ secrets.UI_DEPLOY_KEY }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:

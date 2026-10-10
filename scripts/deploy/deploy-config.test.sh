@@ -221,5 +221,70 @@ assert "otelEndpoint(process.env.INVAI_OTEL_ENDPOINT)" in code, "stage never val
 PY
 check "T34-4 AC2 only Api, Worker, Imaging get OTEL env, via the helper; endpoint validated at plan time" $?
 
+# T-35-2 (B-352) no persisted git credential; the stage allow lists are run for real.
+python3 - "$WF" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+steps = re.split(r"\n      - ", t)
+co = [s for s in steps if s.startswith("uses: actions/checkout@")]
+assert len(co) == 7, "expected 7 checkout steps, found %d" % len(co)
+for s in co:
+    assert re.search(r"^          persist-credentials: false$", s, re.M), "checkout without persist-credentials: false: " + s.split("\n")[0]
+PY
+check "T35-2 AC1 all 7 actions/checkout steps set persist-credentials: false" $?
+SCR="$(mktemp -d -t deploy-stage.XXXXXX)"
+trap 'rm -rf "$SCR"; rm -f "$OTEL_CASE" "${OTEL_CASE%.mjs}"' EXIT
+python3 - "$WF" "$SCR" <<'PY'
+import re, sys, os
+t = open(sys.argv[1]).read().split("\n")
+out = sys.argv[2]
+blocks = []
+for i, l in enumerate(t):
+    m = re.match(r"^(\s*)(?:- )?run:\s*\|\s*$", l)
+    if m:
+        ind = len(m.group(1)); body = []
+        j = i + 1
+        while j < len(t) and (t[j].strip() == "" or len(t[j]) - len(t[j].lstrip()) > ind):
+            body.append(t[j]); j += 1
+        blocks.append("\n".join(body))
+guard = [b for b in blocks if "Unknown stage '$STAGE'. Use" in b]
+deploy = [b for b in blocks if "pnpm deploy:demo" in b]
+assert len(guard) == 1 and len(deploy) == 1, "allow-list run blocks not found (%d, %d)" % (len(guard), len(deploy))
+open(os.path.join(out, "guard.sh"), "w").write(guard[0] + "\n")
+open(os.path.join(out, "deploy.sh"), "w").write(deploy[0] + "\n")
+PY
+check "T35-2 AC2 both stage allow-list run blocks found in the workflow" $?
+mkdir -p "$SCR/bin"
+printf '#!/bin/sh\necho "$@" >> "$PNPM_LOG"\n' > "$SCR/bin/pnpm"; chmod +x "$SCR/bin/pnpm"
+stage_run() { # stage_run <script> <stage>; prints stdout+stderr, returns the script's exit code
+  PNPM_LOG="$SCR/pnpm.log" PATH="$SCR/bin:$PATH" STAGE="$2" INVAI_DOMAIN="x.example.com" AWS_DEPLOY_ROLE_ARN="set" \
+    bash "$SCR/$1" 2>&1
+}
+ok=0
+for s in demo staging production; do
+  stage_run guard.sh "$s" >/dev/null || ok=1
+done
+check "T35-2 AC2 guard step passes demo, staging and production" $ok
+ok=0
+for s in prod Production staging2 "demo " ""; do
+  out="$(stage_run guard.sh "$s")"; rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "Unknown stage"; then :; else ok=1; fi
+done
+check "T35-2 AC2 guard step refuses prod, Production, staging2, 'demo ' and empty with Unknown stage" $ok
+ok=0
+for pair in "demo:deploy:demo" "staging:deploy:staging" "production:deploy:prod"; do
+  s="${pair%%:*}"; want="${pair#*:}"; : > "$SCR/pnpm.log"
+  stage_run deploy.sh "$s" >/dev/null || ok=1
+  [ "$(cat "$SCR/pnpm.log")" = "$want" ] || ok=1
+done
+check "T35-2 AC2 deploy step runs exactly deploy:demo, deploy:staging, deploy:prod for the three stages" $ok
+ok=0
+for s in prod Production ""; do
+  : > "$SCR/pnpm.log"
+  out="$(stage_run deploy.sh "$s")"; rc=$?
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "Unknown stage" && [ ! -s "$SCR/pnpm.log" ]; then :; else ok=1; fi
+done
+check "T35-2 AC2 deploy step refuses prod, Production and empty and never calls pnpm" $ok
+
 echo "# $n checks"
 exit $fail
