@@ -96,19 +96,39 @@ pnpm local:down
   `localhost:1025`.
 - Every service has a healthcheck; `minio-init` additionally gates on `minio`'s.
 
-All of the above are the **default** compose profile (infra only). A **`full`** profile also
-builds and runs `api`, `worker`, `imaging`, `web` and `floor` from the sibling repos'
-Dockerfiles, for a production-like local run:
+All of the above are the **default** compose profile (infra only). A **`full`** profile builds and
+runs the four Dockerfiles (backend, imaging, web, floor) plus a one-off `migrate` service, for a
+production-like local run. Drive it with `scripts/full.sh`, not a bare `docker compose up`:
 
 ```
-pnpm local:full   # docker compose --profile full up -d --build
+scripts/full.sh up             # build one image at a time, start the stack, seed if empty, start the worker
+scripts/full.sh seed --force   # reset and reseed invai_full from the host
+scripts/full.sh down           # stop only the full services (infra and volumes stay)
+scripts/full.sh down --purge   # also drop invai_full, its bucket, Valkey DB 9 and the built images
 ```
 
-`invai-backend`, `invai-web` and `invai-floor` link `@invai/contracts` (and `@invai/ui` for
-web/floor) via `link:../<repo>`, so their Dockerfiles build from the **workspace root** (the
-parent of all `invai-*` repos) rather than their own directory — see the `context`/`dockerfile`
-split in `local/docker-compose.yml` and the comment at the top of each of those Dockerfiles.
-`invai-imaging` has no such sibling dependency and builds from its own directory.
+- **Own data.** Database `invai_full`, Valkey DB 9 and bucket `invai-full`; the shared dev database
+  `invai` is never touched. Postgres roles are cluster-wide, so `invai_app` keeps the local password
+  `invai` in this profile (changing it would break dev and the tests).
+- **Ports.** api 3000, imaging 8000, web 5173, floor 5174 (nginx inside listens on unprivileged
+  8080). Free them first; `full.sh up` refuses if another process holds one.
+- **Mode.** api and worker run `NODE_ENV=production` with `ALLOW_MOCKS=true` (mock providers, a
+  warning on every start). The golden path passes in this mode. Seed logins and the station token are
+  written to `/tmp/invai-full-seed.json`.
+- **Release step.** `migrate` runs `bootstrap-cli` -> `migrate-cli` -> `reference-seed-cli` as the
+  owner role `invai`, then the api starts as `invai_app`.
+- **Seed and worker.** The host seed uses the same placeholder secrets as the containers (they are in
+  `full.sh` and the compose file; both are local-only). The worker starts after the seed.
+- **Imaging dev endpoints.** The image turns `IMAGING_DEV_ENDPOINTS` off (production default). The
+  compose service turns it on because the demo seed needs `/sample-art`. Never set it in an AWS stage.
+- **Build context.** backend, web and floor link `@invai/contracts` (and `@invai/ui`) via
+  `link:../<repo>`, so they build from the **workspace root** with a per-Dockerfile ignore file
+  (`<repo>/Dockerfile.dockerignore`, an allowlist; the root is not a git repo). `invai-imaging`
+  builds from its own directory. `VITE_API_URL` is a build argument for web and floor.
+- Every base image is pinned by digest. To bump one: `docker buildx imagetools inspect <image>:<tag>`.
+  The backend image fetches the RDS CA bundle at build time and checks a pinned sha256.
+- `pnpm local:full` (`up -d --build`) predates `full.sh`: it builds in parallel and starts the worker
+  before any seed. Prefer `full.sh`.
 
 ## AWS (SST)
 

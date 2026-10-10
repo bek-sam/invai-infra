@@ -106,6 +106,7 @@ export default $config({
     const db = new sst.aws.Postgres("Db", {
       vpc,
       version: "17",
+      username: "invai",
       instance: isProd ? "t4g.medium" : "t4g.small",
       storage: isProd ? "100 GB" : "20 GB",
       // Pools connections from api tasks that scale out. The extra credential lets the proxy

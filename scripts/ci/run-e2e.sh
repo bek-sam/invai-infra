@@ -89,7 +89,7 @@ start api "$WORKSPACE_DIR/invai-backend" node_modules/.bin/tsx src/api/server.ts
 wait_http_ok "http://localhost:$API_PORT/health" api || exit 1
 
 log "migrate"
-( cd "$WORKSPACE_DIR/invai-backend" && node_modules/.bin/tsx src/db/migrate.ts ) 2>&1 | tee "$LOG_DIR/migrate.log"
+( cd "$WORKSPACE_DIR/invai-backend" && node_modules/.bin/tsx src/db/migrate-cli.ts ) 2>&1 | tee "$LOG_DIR/migrate.log"
 migrate_rc=${PIPESTATUS[0]}
 if [ "$migrate_rc" -ne 0 ]; then
   log "FAIL: db:migrate failed, see $LOG_DIR/migrate.log"

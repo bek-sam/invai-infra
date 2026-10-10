@@ -1,7 +1,9 @@
 # Local services for development. Matches production engines (Postgres, Valkey, S3).
 # Default profile (no --profile flag) starts infra only: postgres, valkey, minio, mailpit.
-# `docker compose --profile full up -d` also builds and runs api, worker, imaging, web and floor
-# from the sibling repos, for a production-like local run.
+# The `full` profile also builds and runs migrate, api, worker, imaging, web and floor from the
+# sibling repos' Dockerfiles, against its OWN database (invai_full), Valkey DB 9 and bucket
+# invai-full, so it never touches the shared dev data. Drive it with scripts/full.sh (one image
+# at a time, seed, down), not with a bare `docker compose up`.
 name: local
 
 services:
@@ -79,111 +81,159 @@ services:
       retries: 10
 
   # --- full profile: production-like local run, built from the sibling repos ---
+  # Own data: database invai_full, Valkey DB 9, bucket invai-full. The roles are cluster-wide, so
+  # invai_app keeps its local password `invai` here (the shared dev value). Every value below is a
+  # local-only placeholder, none is a secret. The api and worker run NODE_ENV=production with
+  # ALLOW_MOCKS=true (mock providers, a warning on every start), as the demo stage does.
+
+  full-db-init:
+    profiles: ["full"]
+    image: pgvector/pgvector@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: invai
+    entrypoint: >
+      /bin/sh -c "
+      psql -h postgres -U invai -d postgres -tAc \"select 1 from pg_database where datname='invai_full'\" | grep -q 1
+      || psql -h postgres -U invai -d postgres -v ON_ERROR_STOP=1 -c 'create database invai_full owner invai';
+      echo 'full-db-init: database invai_full ready'
+      "
+    restart: "no"
+
+  full-s3-init:
+    profiles: ["full"]
+    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 invai invai-secret &&
+      mc mb --ignore-existing local/invai-full &&
+      mc anonymous set none local/invai-full &&
+      echo 'full-s3-init: bucket invai-full ready'
+      "
+    restart: "no"
+
+  # One-off release step, as the owner role: bootstrap -> migrate -> reference seed.
+  migrate:
+    profiles: ["full"]
+    image: invai-full-backend:local
+    build:
+      context: ../..
+      dockerfile: invai-backend/Dockerfile
+    command:
+      - sh
+      - -c
+      - node dist/db/bootstrap-cli.js && node dist/db/migrate-cli.js && node dist/db/reference-seed-cli.js
+    environment: &backend-env
+      NODE_ENV: production
+      ALLOW_MOCKS: "true"
+      DATABASE_URL: postgres://invai_app:invai@postgres:5432/invai_full
+      MIGRATION_DATABASE_URL: postgres://invai:invai@postgres:5432/invai_full
+      REDIS_URL: redis://valkey:6379/9
+      S3_BUCKET: invai-full
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY_ID: invai
+      S3_SECRET_ACCESS_KEY: invai-secret
+      S3_FORCE_PATH_STYLE: "true"
+      IMAGING_URL: http://imaging:8000
+      IMAGING_SHARED_SECRET: invai-local-full-imaging-secret-00000
+      BETTER_AUTH_SECRET: change-me-32-chars-minimum-xxxxxxxx
+      BETTER_AUTH_URL: http://localhost:3000
+      WEB_ORIGIN: http://localhost:5173
+      FLOOR_ORIGIN: http://localhost:5174
+      FIELD_ENCRYPTION_KEY: k1:KzQaGJQ4pwuYge713w7utD2NrzYH21qNtk//UkCed+E=
+      SMTP_URL: smtp://mailpit:1025
+      MAIL_FROM: InvAI <no-reply@invai.test>
+      # The mock carrier fakes its first scan after this many hours (backend default 2). Low,
+      # like dev.sh, so the golden path's "item shipped" step does not wait two hours.
+      MOCK_CARRIER_TRANSIT_HOURS: "0.001"
+    depends_on:
+      full-db-init:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    restart: "no"
 
   api:
     profiles: ["full"]
-    build:
-      context: ../..
-      dockerfile: invai-backend/Dockerfile
-    command: ["node", "dist/server.js"]
+    image: invai-full-backend:local
+    command: ["node", "dist/api/server.js"]
     ports: ["3000:3000"]
     environment:
-      NODE_ENV: development
+      <<: *backend-env
       PORT: "3000"
-      DATABASE_URL: postgres://invai_app:invai@postgres:5432/invai
-      REDIS_URL: redis://valkey:6379
-      S3_BUCKET: invai-local
-      S3_ENDPOINT: http://minio:9000
-      IMAGING_URL: http://imaging:8000
-      BETTER_AUTH_SECRET: change-me-32-chars-minimum-xxxxxxxx
-      BETTER_AUTH_URL: http://localhost:3000
-      WEB_ORIGIN: http://localhost:5173
-      ANTHROPIC_API_KEY: ""
-      EASYPOST_API_KEY: ""
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      full-s3-init:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
 
+  # Started by full.sh only after the seed finished (the seed parks outbox events; a worker that
+  # runs during it races the seed). No HTTP listener, so the image's API healthcheck is off.
   worker:
     profiles: ["full"]
-    build:
-      context: ../..
-      dockerfile: invai-backend/Dockerfile
-    command: ["node", "dist/index.js"]
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: postgres://invai_app:invai@postgres:5432/invai
-      REDIS_URL: redis://valkey:6379
-      S3_BUCKET: invai-local
-      S3_ENDPOINT: http://minio:9000
-      IMAGING_URL: http://imaging:8000
-      BETTER_AUTH_SECRET: change-me-32-chars-minimum-xxxxxxxx
-      BETTER_AUTH_URL: http://localhost:3000
-      WEB_ORIGIN: http://localhost:5173
-      ANTHROPIC_API_KEY: ""
-      EASYPOST_API_KEY: ""
+    image: invai-full-backend:local
+    command: ["node", "dist/worker/index.js"]
+    environment: *backend-env
+    healthcheck:
+      disable: true
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      full-s3-init:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
-      minio-init:
-        condition: service_completed_successfully
 
   imaging:
     profiles: ["full"]
+    image: invai-full-imaging:local
     build:
       context: ../../invai-imaging
       dockerfile: Dockerfile
     ports: ["8000:8000"]
     environment:
-      S3_BUCKET: invai-local
+      IMAGING_SHARED_SECRET: invai-local-full-imaging-secret-00000
+      S3_BUCKET: invai-full
       S3_ENDPOINT: http://minio:9000
-      REDIS_URL: redis://valkey:6379
-      MODAL_TOKEN_ID: ""
-      MODAL_TOKEN_SECRET: ""
-      FAL_KEY: ""
+      S3_ACCESS_KEY_ID: invai
+      S3_SECRET_ACCESS_KEY: invai-secret
+      S3_CREATE_BUCKET: "false"
+      # The image defaults this off (production). The demo seed needs /sample-art for its design
+      # art, so the local full stack turns it on. Never set it in an AWS stage.
+      IMAGING_DEV_ENDPOINTS: "true"
     depends_on:
-      valkey:
-        condition: service_healthy
-      minio-init:
+      full-s3-init:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
 
   web:
     profiles: ["full"]
+    image: invai-full-web:local
     build:
       context: ../..
       dockerfile: invai-web/Dockerfile
-    ports: ["5173:80"]
-    environment:
-      VITE_API_URL: http://localhost:3000
+      args:
+        VITE_API_URL: http://localhost:3000
+    ports: ["5173:8080"]
     depends_on:
       - api
 
   floor:
     profiles: ["full"]
+    image: invai-full-floor:local
     build:
       context: ../..
       dockerfile: invai-floor/Dockerfile
-    ports: ["5174:80"]
-    environment:
-      VITE_API_URL: http://localhost:3000
+      args:
+        VITE_API_URL: http://localhost:3000
+    ports: ["5174:8080"]
     depends_on:
       - api
 
