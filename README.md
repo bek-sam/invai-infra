@@ -246,7 +246,7 @@ placeholder, so a deploy fails while one is missing.
 
 ### Release order
 
-`pnpm deploy:staging` (or `deploy:prod`) runs three steps:
+`pnpm deploy:demo`, `deploy:staging` or `deploy:prod` runs three steps:
 
 1. Deploy only the `Migrate` task and what it needs (`--target Migrate`).
 2. Run it: `pnpm release:migrate:<stage>` runs `infra/run-migrate.ts` inside `sst shell`. The
@@ -255,8 +255,12 @@ placeholder, so a deploy fails while one is missing.
 3. Deploy everything else.
 
 If the migration fails, the rollout stops. These steps need AWS credentials, so only the owner
-or CI runs them. `.github/workflows/deploy.yml` still has a placeholder `role-to-assume` and
-doesn't run the migrate step yet (wave 25).
+or CI runs them. `.github/workflows/deploy.yml` runs the same script: pick `demo`, `staging` or
+`production` (a `v*` tag push deploys `production`). The job's GitHub environment is the stage; it
+reads the variables `INVAI_DOMAIN` and `AWS_DEPLOY_ROLE_ARN` (and optionally `INVAI_OTEL_ENDPOINT`)
+from that environment and stops with a plain message if one is empty. The role is assumed by OIDC
+with the trust policies in `infra/iam/` (see its README). `pnpm deploy:test` checks the workflow,
+the scripts and those files without calling AWS.
 
 ```
 pnpm typecheck    # tsc --noEmit (sst.config.ts, and the invai-web/invai-floor csp.ts it imports)
