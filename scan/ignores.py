@@ -87,6 +87,7 @@ def gitleaks_toml(entries, repo):
                 'description = "%s (owner: %s, expires %s)"' % (e["reason"].replace('"', "'"), e["owner"], e["expires"]),
                 'targetRules = ["%s"]' % e["rule"],
                 'condition = "AND"',
+            ] + (["commits = [%s]" % ", ".join('"%s"' % c for c in e["commits"])] if e.get("commits") else []) + [
                 "paths = ['''%s''']" % e["path_regex"],
                 'regexTarget = "line"',
                 "regexes = ['''%s''']" % e["line_regex"],

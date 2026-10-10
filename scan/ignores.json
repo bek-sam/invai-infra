@@ -19,6 +19,19 @@
       "reason": "false positive: wave and review notes quote command lines that BLANK the AI and Stripe keys (`KEY= KEY2=`); no value is present (checked: no sk- string of 20+ characters in any history line of invai-docs except a quoted URL slug)",
       "owner": "platform-sre",
       "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "docs-blank-key-report-36976c3",
+      "rule": "generic-api-key",
+      "targets": ["invai-docs"],
+      "path_regex": "^ops/scans/2026-10-10\\.md$",
+      "line_regex": "OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=",
+      "commits": ["36976c339a2a60e78d85273269845c2d6f92fa04"],
+      "reason": "false positive in one historical commit: the first scan report quoted a command that blanks the AI keys (empty assignments, no value). Local history is not rewritten; the line is reworded in the next commit. Exact path + rule + commit + line",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
     }
+
   ]
 }
