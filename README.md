@@ -132,6 +132,29 @@ scripts/full.sh down --purge   # also drop invai_full, its bucket, Valkey DB 9 a
 - `pnpm local:full` (`up -d --build`) predates `full.sh`: it builds in parallel and starts the worker
   before any seed. Prefer `full.sh`.
 
+## Observability: local traces (T-32-5)
+
+Tracing is off by default everywhere. To follow one request through api -> outbox relay -> worker
+job -> imaging in a local Jaeger:
+
+```
+cd local && docker compose --profile observability up -d     # Jaeger 2.21, 127.0.0.1:4318 (OTLP/HTTP) and :16686 (UI)
+cd .. && OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 OPENAI_API_KEY= ANTHROPIC_API_KEY= pnpm dev:all
+# ... do something, e.g. build a gang sheet, then open http://127.0.0.1:16686
+cd local && docker compose --profile observability down       # traces live in memory only
+```
+
+- The endpoint must be in the **shell environment**, not in `invai-backend/.env`: the backend starts
+  its tracer with `node --import` before `.env` is read. Service names default to `invai-api`,
+  `invai-worker` and `invai-imaging` (`OTEL_SERVICE_NAME` overrides; don't set it for `dev:all`, or
+  all three get the same name).
+- Only allowlisted span attributes are exported (method, route, status, procedure, job and queue
+  names, ids, sizes); no query strings, headers, bodies or error messages.
+- Query API for scripts: `GET http://127.0.0.1:16686/api/v3/traces?query.service_name=invai-api&query.start_time_min=<RFC3339>&query.start_time_max=<RFC3339>`
+  and `GET /api/v3/traces/<traceId>` (Jaeger 2 has no `/api/traces`).
+- Deployed stages need platform-sre work first: the image's CMD must add
+  `--import ./dist/lib/telemetry.js`, and the stage needs a collector endpoint (not in `sst.config.ts` yet).
+
 ## AWS (SST)
 
 `sst.config.ts` is written and typechecked against the installed `sst@4.17.1`. Check

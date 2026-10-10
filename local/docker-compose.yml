@@ -82,6 +82,15 @@ services:
       timeout: 5s
       retries: 10
 
+  # Trace viewer for local tracing (T-32-5), only with `--profile observability`. OTLP/HTTP on
+  # 127.0.0.1:4318 (set OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 in the shell that starts
+  # api, worker and imaging), UI and query API on 127.0.0.1:16686. In-memory storage: traces are
+  # gone when it stops. Bound to loopback only, like the full profile's app ports.
+  jaeger:
+    profiles: ["observability"]
+    image: jaegertracing/jaeger:2.21.0@sha256:3d0ac795ff98aa04d1be04311d2dac6c25b4bfc8322dc02e53bc5b170c5018c3
+    ports: ["127.0.0.1:4318:4318", "127.0.0.1:16686:16686"]
+
   # --- full profile: production-like local run, built from the sibling repos ---
   # Own data: database invai_full, Valkey DB 9, bucket invai-full. The roles are cluster-wide, so
   # invai_app keeps its local password `invai` here (the shared dev value). Every value below is a
