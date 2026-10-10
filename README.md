@@ -259,3 +259,18 @@ hardening checks, all as containers pinned by digest (`scan/tools.env`). It exit
 secret or any HIGH/CRITICAL finding with a fix. Ignores live only in `scan/ignores.json`, each with
 a reason, an owner and an expiry. `pnpm scan:test` tests the machinery. How-to and CI layout:
 `invai-docs/ops/scanning.md`.
+
+## Contracts consumer check (`pnpm contracts:check`)
+
+`pnpm contracts:check [--contracts <dir>]` typechecks invai-backend, invai-web, invai-floor and
+invai-ui against a contracts tree (default `../invai-contracts`) and prints one PASS or FAIL line per
+consumer with the contracts version. Exit 0 all pass, 1 a consumer failed (first 20 error lines each),
+2 setup error. It writes a throwaway tsconfig per consumer in a temp dir (`extends` the consumer's
+tsconfig, `paths` maps `@invai/contracts` to `<dir>/src/index.ts`), so no repo, link or
+`node_modules` is touched. A throwaway copy of contracts needs `node_modules` symlinked to the real
+one. When `<dir>` is a git repo and `src/` changed since the commit that last set `"version"`, a
+missing `## <version>` CHANGELOG heading prints a WARN (not a failure). `pnpm gate` runs it right
+after invai-contracts' own checks, only when invai-contracts is in the gate. Test it with
+`pnpm contracts:check:test` (add `--mutants` to prove each case fails against a broken script).
+It typechecks working trees as they are, so another person's unfinished edit in a consumer shows up
+as a FAIL: run `git -C <repo> status --short` before blaming the contracts change.

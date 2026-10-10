@@ -14,6 +14,8 @@
     "local:full": "bash scripts/full.sh up",
     "scan": "bash scripts/scan.sh",
     "scan:test": "bash scripts/scan.test.sh",
+    "contracts:check": "bash scripts/contracts-check.sh",
+    "contracts:check:test": "bash scripts/contracts-check.test.sh",
     "dev:all": "bash scripts/dev.sh",
     "stop": "bash scripts/stop.sh",
     "reset-db": "bash scripts/reset-db.sh",

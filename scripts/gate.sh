@@ -81,6 +81,9 @@ for r in "${GATE_REPOS[@]}"; do
   for suite in $(required_checks "$kind"); do
     run_suite "$r" "$suite"
   done
+  if [ "$r" = invai-contracts ]; then
+    run_contracts_check
+  fi
 done
 
 # ---------- golden path (AC1) ----------

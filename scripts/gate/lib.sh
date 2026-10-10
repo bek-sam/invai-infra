@@ -250,6 +250,25 @@ run_suite() {
   fi
 }
 
+# run_contracts_check: after invai-contracts' own suites, typecheck backend/web/floor/ui against
+# the contracts tree under test (T-32-4). One PASS/FAIL line like run_suite; WARN lines (changelog)
+# go to the log only.
+run_contracts_check() {
+  local out rc names
+  section "invai-contracts consumers: bash scripts/contracts-check.sh"
+  out="$(bash "$INFRA_DIR/scripts/contracts-check.sh" --contracts "$WORKSPACE_DIR/invai-contracts" 2>&1)"
+  rc=$?
+  log "$out"
+  if [ $rc -eq 0 ]; then
+    echo "PASS invai-contracts consumers $(printf '%s\n' "$out" | grep -c '^PASS ') passed"
+  else
+    names="$(printf '%s\n' "$out" | grep -E '^FAIL ' | sed 's/ (contracts.*//; s/^FAIL //' | paste -sd',' -)"
+    [ -z "$names" ] && names="setup error, see $LOG_FILE"
+    echo "FAIL invai-contracts consumers: $names"
+    GATE_OVERALL_FAILED=1
+  fi
+}
+
 # ---------- infra health (for the golden-path phase) ----------
 
 wait_healthy() {
