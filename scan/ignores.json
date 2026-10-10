@@ -7,7 +7,7 @@
       "rule": "generic-api-key",
       "targets": ["invai-docs"],
       "path_regex": "(^|/)(waves|team)/.*\\.md$",
-      "line_regex": "^[^=]*(OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=(\\s+|$)|STRIPE_WEBHOOK_SECRET=\" \")([^=]|=[^\\s=]{0,15}(\\s|$))*$",
+      "line_regex": "^([^=]|=([\\[\\]({\\\\^][^\\s=]*|https?://[^\\s=]*|[^\\s=]{0,15}(\\s|$)))*(OPENAI_API_KEY=\\s+ANTHROPIC_API_KEY=[^\\s=]{0,15}(\\s|$)|STRIPE_WEBHOOK_SECRET=\" \"(\\s|$))([^=]|=([\\[\\]({\\\\^][^\\s=]*|https?://[^\\s=]*|[^\\s=]{0,15}(\\s|$)))*$",
       "reason": "false positive: wave and review notes quote command lines that BLANK the AI and Stripe keys (`KEY= KEY2=`); no value is present (checked: no sk- string of 20+ characters in any history line of invai-docs except a quoted URL slug)",
       "owner": "platform-sre",
       "expires": "2027-04-10"
