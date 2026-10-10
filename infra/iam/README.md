@@ -17,7 +17,9 @@ Notes for the owner:
   setting in GitHub (B5): `demo` and `staging` allow deployment from `main` only; `production` allows
   `main` and tags `v*` and needs the owner as reviewer.
 - One non-prod role for `demo` and `staging` adds no boundary compared with two roles: they share an
-  account and the same account-wide permission policy. Real separation from production needs a separate
-  account (S-45) or a narrowed permission policy.
+  account and the same account-wide permission policy. If production is in the same AWS account, the
+  production approval does not protect it: the demo/staging role with admin can still change or read
+  production. Put production in its own AWS account before it holds real data (S-45, S-70), or give the
+  demo/staging role a policy that denies production resources.
 - The deploy role's permission policy stays as written in checklist B3. Narrowing it needs a real
   account to prove SST still deploys (follow-up).
