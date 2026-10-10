@@ -154,5 +154,72 @@ PY
 check "AC5 smtp-send.json allows only ses:SendRawEmail on the identity and its configuration set" $?
 [ -f "$IAM/README.md" ]; check "AC5 infra/iam/README.md exists" $?
 
+# T-34-4 tracing in deployed stages (AC 1, 2, 4). BACKEND_DIR overrides the backend checkout (Dockerfile).
+BACKEND_DIR="${BACKEND_DIR:-$(cd "$INFRA_DIR/../invai-backend" && pwd)}"
+export BACKEND_DIR
+SST="$INFRA_DIR/sst.config.ts"
+OTEL_TS="$INFRA_DIR/scripts/deploy/otel-endpoint.ts"
+OTEL_CASE="$(mktemp -t otel-case.XXXXXX).mjs"
+trap 'rm -f "$OTEL_CASE" "${OTEL_CASE%.mjs}"' EXIT
+cat > "$OTEL_CASE" <<JS
+const { otelEndpoint, otelEnv } = await import("file://$OTEL_TS");
+const refused = (v) => { try { otelEndpoint(v); return false; } catch (e) { return /INVAI_OTEL_ENDPOINT/.test(e.message); } };
+const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, JSON.stringify(a)); process.exit(1); } };
+for (const v of [undefined, "", "   "]) {
+  eq(otelEndpoint(v), null, "unset/blank must be null");
+  for (const s of ["invai-api", "invai-worker", "invai-imaging"]) eq(otelEnv(v, s, "staging"), {}, "unset must add no env for " + s);
+}
+for (const v of ["https://collector.example.com", "https://collector.example.com:4318/otlp", "http://localhost:4318", "http://127.0.0.1:4318"])
+  eq(otelEndpoint(v), v, "accepted " + v);
+for (const v of ["http://collector.example.com:4318", "http://10.0.0.5:4318", "http://127.0.0.1", "http://127.0.0.1.evil.example:4318", "http://localhost.evil.example:4318",
+  "http://[::1]:4318", "http://0.0.0.0:4318", "ftp://collector.example.com", "collector.example.com", "https://user:pw@collector.example.com", "https://c.example.com/?k=v", "javascript:1"])
+  if (!refused(v)) { console.error("not refused:", v); process.exit(1); }
+eq(otelEnv("https://c.example.com", "invai-imaging", "demo"),
+  { OTEL_EXPORTER_OTLP_ENDPOINT: "https://c.example.com", OTEL_SERVICE_NAME: "invai-imaging", OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=demo" }, "env shape");
+const imaging = otelEnv("https://c.example.com", "invai-imaging", "staging");
+eq(imaging.OTEL_RESOURCE_ATTRIBUTES, "deployment.environment=staging", "imaging resource attributes");
+JS
+[ -f "$OTEL_TS" ] && node --experimental-strip-types --no-warnings "$OTEL_CASE" >/dev/null 2>&1
+check "T34-4 AC4 helper: unset adds no OTEL env; imaging gets deployment.environment; http only on loopback with a port; https ok; others refused" $?
+python3 - "$SST" "$BACKEND_DIR/Dockerfile" <<'PY'
+import re, sys
+raw = open(sys.argv[1]).read()
+code = "\n".join(l for l in raw.split("\n") if not l.lstrip().startswith("//"))
+docker = open(sys.argv[2]).read()
+def block(name):
+    m = re.search(r'new sst\.aws\.(?:Service|Task)\("%s",.*?\n    \}\);' % name, code, re.S)
+    assert m, name + " block missing"
+    return m.group(0)
+def cmd(name):
+    m = re.search(r'\n      command: (\[[^\]]*\]),', block(name), re.S)
+    assert m, name + " command missing"
+    return m.group(1)
+api = '["node", "--import", "./dist/lib/telemetry.js", "dist/api/server.js"]'
+wrk = '["node", "--import", "./dist/lib/telemetry.js", "dist/worker/index.js"]'
+assert cmd("Api") == api, "Api command is " + cmd("Api")
+assert cmd("Worker") == wrk, "Worker command is " + cmd("Worker")
+assert re.search(r'^CMD ' + re.escape(api) + r'$', docker, re.M), "Dockerfile CMD differs from the Api command"
+assert "node dist/db/bootstrap-cli.js && node dist/db/migrate-cli.js && node dist/db/reference-seed-cli.js" in block("Migrate"), "release task command changed"
+assert "--import" not in block("Migrate"), "release task must not load telemetry"
+PY
+check "T34-4 AC1 Api and Worker commands and the Dockerfile CMD use --import ./dist/lib/telemetry.js; release task unchanged" $?
+python3 - "$SST" <<'PY'
+import re, sys
+raw = open(sys.argv[1]).read()
+code = "\n".join(l for l in raw.split("\n") if not l.lstrip().startswith("//"))
+def block(name):
+    m = re.search(r'new sst\.aws\.(?:Service|Task)\("%s",.*?\n    \}\);' % name, code, re.S)
+    assert m, name + " block missing"
+    return m.group(0)
+for svc, name in (("Api", "invai-api"), ("Worker", "invai-worker"), ("Imaging", "invai-imaging")):
+    assert ('otelEnv(process.env.INVAI_OTEL_ENDPOINT, "%s", stage)' % name) in block(svc), svc + " lacks otelEnv"
+assert "otel" not in block("Migrate").lower(), "release task must get no OTEL env"
+be = re.search(r"const backendEnvironment = \{.*?\n    \};", code, re.S).group(0)
+assert "OTEL" not in be, "shared backendEnvironment must not carry OTEL (Migrate uses it)"
+assert not re.search(r"(?<![A-Z_])OTEL_", code), "OTEL_ variable named outside the helper"
+assert "otelEndpoint(process.env.INVAI_OTEL_ENDPOINT)" in code, "stage never validates the endpoint at plan time"
+PY
+check "T34-4 AC2 only Api, Worker, Imaging get OTEL env, via the helper; endpoint validated at plan time" $?
+
 echo "# $n checks"
 exit $fail

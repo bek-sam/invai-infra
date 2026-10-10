@@ -155,8 +155,10 @@ cd local && docker compose stop jaeger && docker compose rm -f jaeger   # traces
   names, ids, sizes); no query strings, headers, bodies or error messages.
 - Query API for scripts: `GET http://127.0.0.1:16686/api/v3/traces?query.service_name=invai-api&query.start_time_min=<RFC3339>&query.start_time_max=<RFC3339>`
   and `GET /api/v3/traces/<traceId>` (Jaeger 2 has no `/api/traces`).
-- Deployed stages need platform-sre work first: the image's CMD must add
-  `--import ./dist/lib/telemetry.js`, and the stage needs a collector endpoint (not in `sst.config.ts` yet).
+- Deployed stages (T-34-4): the image CMD and the Api and Worker commands already start with `--import ./dist/lib/telemetry.js`.
+  Tracing stays off until the optional deploy input `INVAI_OTEL_ENDPOINT` is set (`https://...`, or `http://localhost:<port>` for a
+  sidecar; anything else fails the plan). No collector is chosen yet, so leave it empty. What is collected and how to set it:
+  `invai-docs/ops/observability.md`.
 
 ## AWS (SST)
 

@@ -47,6 +47,13 @@ export default $config({
           'production and "app|floor|api.<stage>.<domain>" elsewhere.',
       );
     }
+    // ---- Tracing (optional owner input) ----------------------------------------------------
+    // `INVAI_OTEL_ENDPOINT` unset or empty: no OTEL variable on any service, tracing stays off.
+    // Set: https://…, or http://localhost:<port> for a collector sidecar; anything else fails the
+    // plan. No collector is chosen yet (invai-docs/ops/observability.md).
+    const { otelEndpoint, otelEnv } = await import("./scripts/deploy/otel-endpoint");
+    otelEndpoint(process.env.INVAI_OTEL_ENDPOINT);
+
     const host = (name: string) => (isProd ? `${name}.${domain}` : `${name}.${stage}.${domain}`);
     const apiHost = host("api");
     const webHost = host("app");
@@ -342,6 +349,7 @@ export default $config({
         S3_ACCESS_KEY_ID: "",
         S3_SECRET_ACCESS_KEY: "",
         S3_CREATE_BUCKET: "false",
+        ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-imaging", stage),
       },
       ssm: pick("IMAGING_SHARED_SECRET"),
       health: {
@@ -391,12 +399,15 @@ export default $config({
       cluster,
       architecture: "arm64",
       image: backendImage,
-      command: ["node", "dist/api/server.js"],
+      command: ["node", "--import", "./dist/lib/telemetry.js", "dist/api/server.js"],
       cpu: "0.5 vCPU",
       memory: "1 GB",
       link: [files],
       permissions: [kmsPermission],
-      environment: backendEnvironment,
+      environment: {
+        ...backendEnvironment,
+        ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-api", stage),
+      },
       ssm: backendSsm,
       loadBalancer: {
         // B-03: HTTPS with an ACM certificate for api.<domain>; plain HTTP only redirects.
@@ -439,12 +450,15 @@ export default $config({
       cluster,
       architecture: "arm64",
       image: backendImage,
-      command: ["node", "dist/worker/index.js"],
+      command: ["node", "--import", "./dist/lib/telemetry.js", "dist/worker/index.js"],
       cpu: "1 vCPU",
       memory: "2 GB",
       link: [files],
       permissions: [kmsPermission],
-      environment: backendEnvironment,
+      environment: {
+        ...backendEnvironment,
+        ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-worker", stage),
+      },
       ssm: backendSsm,
       scaling: { min: 1, max: 1 },
       transform: { taskDefinition: withStopTimeout, executionRole },
