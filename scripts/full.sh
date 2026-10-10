@@ -5,6 +5,7 @@
 #
 #   scripts/full.sh up        build one image at a time, start infra + the profile, seed the demo
 #                             data if invai_full is empty, then start the worker
+#   scripts/full.sh build     build the four images only (what `pnpm scan` scans), nothing started
 #   scripts/full.sh seed      (re)seed invai_full from the host; --force resets it first
 #   scripts/full.sh down      stop and remove only the `full` services; infra and volumes stay
 #   scripts/full.sh down --purge   also drop invai_full, its bucket, Valkey DB 9 and the images
@@ -27,8 +28,8 @@ MIN_FREE_GB=6
 # local/docker-compose.yml: the host seed encrypts with this FIELD_ENCRYPTION_KEY and talks to
 # imaging with this secret, and the containers must read the same data back. BETTER_AUTH_SECRET
 # also keys the floor PIN and station hashes (FLOOR_TOKEN_SECRET falls back to it): a seed made
-# with another value leaves every PIN "not recognized" in the containers. The host's .env must
-# not leak in, so all of these are exported explicitly.
+# with another value leaves every PIN "not recognized" in the containers. The host's environment
+# and .env must not leak in: the seed runs under `env -i` plus an explicit list (seed_exec).
 FULL_IMAGING_SECRET="invai-local-full-imaging-secret-00000"
 FULL_FIELD_KEY="k1:KzQaGJQ4pwuYge713w7utD2NrzYH21qNtk//UkCed+E="
 FULL_AUTH_SECRET="change-me-32-chars-minimum-xxxxxxxx"
@@ -67,16 +68,23 @@ company_count() {
   psql_full invai_full -c "select count(*) from companies" 2>/dev/null | tr -d '[:space:]'
 }
 
-seed_env() {
-  export DATABASE_URL="postgres://invai_app:invai@localhost:5432/invai_full"
-  export MIGRATION_DATABASE_URL="postgres://invai:invai@localhost:5432/invai_full"
-  export REDIS_URL="redis://localhost:6379/9"
-  export S3_BUCKET="invai-full" S3_ENDPOINT="http://localhost:9000"
-  export S3_ACCESS_KEY_ID="invai" S3_SECRET_ACCESS_KEY="invai-secret" S3_FORCE_PATH_STYLE="true"
-  export IMAGING_URL="http://localhost:8000" IMAGING_SHARED_SECRET="$FULL_IMAGING_SECRET"
-  export FIELD_ENCRYPTION_KEY="$FULL_FIELD_KEY" BETTER_AUTH_SECRET="$FULL_AUTH_SECRET"
-  export BETTER_AUTH_URL="http://localhost:3000" WEB_ORIGIN="http://localhost:5173" FLOOR_ORIGIN="http://localhost:5174"
-  export SEED_OUTPUT_FILE="$SEED_OUT"
+# Runs "$@" with an empty environment plus the explicit list below. env -i keeps the host shell's
+# variables out, and INVAI_SKIP_DOTENV stops src/env.ts from reading invai-backend/.env (a host
+# .env may hold real AI keys that would otherwise reach the seed, S-62).
+seed_exec() {
+  env -i \
+    PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
+    INVAI_SKIP_DOTENV=1 \
+    DATABASE_URL="postgres://invai_app:invai@localhost:5432/invai_full" \
+    MIGRATION_DATABASE_URL="postgres://invai:invai@localhost:5432/invai_full" \
+    REDIS_URL="redis://localhost:6379/9" \
+    S3_BUCKET="invai-full" S3_ENDPOINT="http://localhost:9000" \
+    S3_ACCESS_KEY_ID="invai" S3_SECRET_ACCESS_KEY="invai-secret" S3_FORCE_PATH_STYLE="true" \
+    IMAGING_URL="http://localhost:8000" IMAGING_SHARED_SECRET="$FULL_IMAGING_SECRET" \
+    FIELD_ENCRYPTION_KEY="$FULL_FIELD_KEY" BETTER_AUTH_SECRET="$FULL_AUTH_SECRET" \
+    BETTER_AUTH_URL="http://localhost:3000" WEB_ORIGIN="http://localhost:5173" FLOOR_ORIGIN="http://localhost:5174" \
+    SEED_OUTPUT_FILE="$SEED_OUT" \
+    "$@"
 }
 
 run_seed() {
@@ -84,18 +92,34 @@ run_seed() {
   # The seed parks outbox events and a running worker races it, so the worker is stopped first.
   compose --profile full stop worker >/dev/null 2>&1 || true
   (
-    seed_env
     cd "$WORKSPACE_DIR/invai-backend" || exit 1
     if [ "$force" = "--force" ]; then
-      pnpm db:reset && pnpm db:migrate || exit 1
+      seed_exec pnpm db:reset && seed_exec pnpm db:migrate || exit 1
     fi
-    pnpm db:seed
+    seed_exec pnpm db:seed
   ) || die "seed failed (database invai_full; see the output above)"
   echo "   seed output: $SEED_OUT"
 }
 
 start_worker() {
   compose --profile full up -d --no-build worker || die "worker did not start"
+}
+
+build_images() {
+  log "Building images, one at a time (free: $(free_gb) GB)"
+  local svc
+  for svc in migrate imaging web floor; do
+    check_disk
+    echo "   building $svc"
+    compose --profile full build "$svc" || die "build of $svc failed"
+    docker image prune -f >/dev/null 2>&1 || true
+  done
+}
+
+cmd_build() {
+  need_docker
+  build_images
+  echo "images built: invai-full-{backend,imaging,web,floor}:local (pnpm scan scans these)"
 }
 
 cmd_up() {
@@ -111,14 +135,7 @@ cmd_up() {
   compose up -d || die "infra did not start"
   for p in postgres valkey minio mailpit; do wait_healthy "$p"; done
 
-  log "Building images, one at a time (free: $(free_gb) GB)"
-  local svc
-  for svc in migrate imaging web floor; do
-    check_disk
-    echo "   building $svc"
-    compose --profile full build "$svc" || die "build of $svc failed"
-    docker image prune -f >/dev/null 2>&1 || true
-  done
+  build_images
 
   log "Starting full profile (migrate runs first, then api, imaging, web, floor)"
   compose --profile full up -d --no-build --wait $FULL_APP_SERVICES || die "the full profile did not become healthy"
@@ -173,7 +190,8 @@ cmd_down() {
 
 case "${1:-}" in
   up) cmd_up ;;
+  build) cmd_build ;;
   seed) cmd_seed "${2:-}" ;;
   down) cmd_down "${2:-}" ;;
-  *) echo "usage: full.sh up | seed [--force] | down [--purge]" >&2; exit 2 ;;
+  *) echo "usage: full.sh up | build | seed [--force] | down [--purge]" >&2; exit 2 ;;
 esac

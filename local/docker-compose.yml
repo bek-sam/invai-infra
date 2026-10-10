@@ -3,7 +3,9 @@
 # The `full` profile also builds and runs migrate, api, worker, imaging, web and floor from the
 # sibling repos' Dockerfiles, against its OWN database (invai_full), Valkey DB 9 and bucket
 # invai-full, so it never touches the shared dev data. Drive it with scripts/full.sh (one image
-# at a time, seed, down), not with a bare `docker compose up`.
+# at a time, seed, down), not with a bare `docker compose up`. The four app ports of the profile bind
+# to 127.0.0.1 only (S-62): the placeholder secrets, demo logins and imaging dev endpoints are not
+# reachable from the LAN. The infra services above keep their all-interface ports (existing dev flow).
 name: local
 
 services:
@@ -163,7 +165,7 @@ services:
     profiles: ["full"]
     image: invai-full-backend:local
     command: ["node", "dist/api/server.js"]
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
     environment:
       <<: *backend-env
       PORT: "3000"
@@ -198,7 +200,7 @@ services:
     build:
       context: ../../invai-imaging
       dockerfile: Dockerfile
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
     environment:
       IMAGING_SHARED_SECRET: invai-local-full-imaging-secret-00000
       S3_BUCKET: invai-full
@@ -221,7 +223,7 @@ services:
       dockerfile: invai-web/Dockerfile
       args:
         VITE_API_URL: http://localhost:3000
-    ports: ["5173:8080"]
+    ports: ["127.0.0.1:5173:8080"]
     depends_on:
       - api
 
@@ -233,7 +235,7 @@ services:
       dockerfile: invai-floor/Dockerfile
       args:
         VITE_API_URL: http://localhost:3000
-    ports: ["5174:8080"]
+    ports: ["127.0.0.1:5174:8080"]
     depends_on:
       - api
 

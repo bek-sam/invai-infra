@@ -1,0 +1,61 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: invai-infra
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: invai-infra
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: invai-infra/package.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: invai-infra/.nvmrc
+          cache: pnpm
+          cache-dependency-path: invai-infra/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm scan:test
+
+  # Supply-chain scan (T-31-4): same tools, digests and threshold as `pnpm scan` in invai-infra
+  # (scan/tools.env). Results stay in the job log: nothing is uploaded. Ignores come from
+  # .github/trivyignore.yaml, generated from invai-infra/scan/ignores.json; each has an expiry.
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: invai-infra
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Secrets (gitleaks, full history)
+        run: docker run --rm -v "$PWD/invai-infra:/repo:ro" ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --redact --no-banner --exit-code 1
+      - name: Dependencies (trivy, HIGH and CRITICAL with a fix)
+        run: |
+          docker run --rm -v "$PWD/invai-infra:/src:ro" aquasec/trivy@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa fs /src \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --include-dev-deps \
+            --ignorefile /src/.github/trivyignore.yaml --exit-code 1
+      - name: Workflows (actionlint, SHA pins, permissions)
+        run: |
+          docker run --rm -v "$PWD/invai-infra:/repo:ro" -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+          unpinned="$(grep -rnE '^\s*(-\s+)?uses:' invai-infra/.github/workflows | grep -vE 'uses:\s+\./' | grep -vE '@[0-9a-f]{40}' || true)"
+          [ -z "$unpinned" ] || { echo "actions not pinned by SHA:"; echo "$unpinned"; exit 1; }
+          missing="$(grep -L '^permissions:' invai-infra/.github/workflows/*.yml || true)"
+          [ -z "$missing" ] || { echo "no top-level permissions: $missing"; exit 1; }

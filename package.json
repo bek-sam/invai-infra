@@ -11,7 +11,9 @@
     "release:migrate:prod": "sst shell --stage production -- node infra/run-migrate.ts",
     "local:up": "docker compose -f local/docker-compose.yml up -d",
     "local:down": "docker compose -f local/docker-compose.yml down",
-    "local:full": "docker compose -f local/docker-compose.yml --profile full up -d --build",
+    "local:full": "bash scripts/full.sh up",
+    "scan": "bash scripts/scan.sh",
+    "scan:test": "bash scripts/scan.test.sh",
     "dev:all": "bash scripts/dev.sh",
     "stop": "bash scripts/stop.sh",
     "reset-db": "bash scripts/reset-db.sh",
@@ -20,11 +22,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "sst": "^4.17.1",
-    "typescript": "^7.0.2",
     "@biomejs/biome": "^2.5.14",
     "@types/node": "^26.6.2",
-    "concurrently": "^9.1.2"
+    "concurrently": "^10.0.6",
+    "sst": "^4.17.1",
+    "typescript": "^7.0.2"
   },
   "packageManager": "pnpm@12.6.0",
   "engines": {

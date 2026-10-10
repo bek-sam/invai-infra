@@ -102,6 +102,7 @@ production-like local run. Drive it with `scripts/full.sh`, not a bare `docker c
 
 ```
 scripts/full.sh up             # build one image at a time, start the stack, seed if empty, start the worker
+scripts/full.sh build          # build the four images only (what `pnpm scan` scans)
 scripts/full.sh seed --force   # reset and reseed invai_full from the host
 scripts/full.sh down           # stop only the full services (infra and volumes stay)
 scripts/full.sh down --purge   # also drop invai_full, its bucket, Valkey DB 9 and the built images
@@ -111,14 +112,15 @@ scripts/full.sh down --purge   # also drop invai_full, its bucket, Valkey DB 9 a
   `invai` is never touched. Postgres roles are cluster-wide, so `invai_app` keeps the local password
   `invai` in this profile (changing it would break dev and the tests).
 - **Ports.** api 3000, imaging 8000, web 5173, floor 5174 (nginx inside listens on unprivileged
-  8080). Free them first; `full.sh up` refuses if another process holds one.
+  8080), bound to `127.0.0.1` only (not reachable from the LAN). Free them first; `full.sh up` refuses if another process holds one.
 - **Mode.** api and worker run `NODE_ENV=production` with `ALLOW_MOCKS=true` (mock providers, a
   warning on every start). The golden path passes in this mode. Seed logins and the station token are
   written to `/tmp/invai-full-seed.json`.
 - **Release step.** `migrate` runs `bootstrap-cli` -> `migrate-cli` -> `reference-seed-cli` as the
   owner role `invai`, then the api starts as `invai_app`.
 - **Seed and worker.** The host seed uses the same placeholder secrets as the containers (they are in
-  `full.sh` and the compose file; both are local-only). The worker starts after the seed.
+  `full.sh` and the compose file; both are local-only). The seed runs under `env -i` plus that list,
+  so a host `invai-backend/.env` (it may hold real keys) cannot reach it. The worker starts after the seed.
 - **Imaging dev endpoints.** The image turns `IMAGING_DEV_ENDPOINTS` off (production default). The
   compose service turns it on because the demo seed needs `/sample-art`. Never set it in an AWS stage.
 - **Build context.** backend, web and floor link `@invai/contracts` (and `@invai/ui`) via
@@ -248,3 +250,12 @@ pins ambient `Buffer`/`Uint8Array` types to a version compatible with `typescrip
 (SST's own bundled `@types/node@22.10`, resolved first otherwise since it's the closer
 `node_modules`, produced real type errors under `typescript@7.0.2`'s newer iterator-helper
 lib types).
+
+## Scanning (`pnpm scan`)
+
+`pnpm scan` runs gitleaks (history and working tree), trivy (every lockfile and the four
+`invai-full-*:local` images), actionlint with SHA-pin and `permissions:` checks, and the S-62
+hardening checks, all as containers pinned by digest (`scan/tools.env`). It exits non-zero on any
+secret or any HIGH/CRITICAL finding with a fix. Ignores live only in `scan/ignores.json`, each with
+a reason, an owner and an expiry. `pnpm scan:test` tests the machinery. How-to and CI layout:
+`invai-docs/ops/scanning.md`.
