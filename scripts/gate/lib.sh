@@ -45,7 +45,7 @@ start_imaging() {
   local was_m=0
   case $- in *m*) was_m=1 ;; esac
   set -m
-  (cd "$WORKSPACE_DIR/invai-imaging" && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000) >>"$LOG_FILE" 2>&1 &
+  (cd "$WORKSPACE_DIR/invai-imaging" && uv run uvicorn app.main:app --host 127.0.0.1 --port "$IMAGING_PORT") >>"$LOG_FILE" 2>&1 &
   local pgid=$!
   [ "$was_m" -eq 1 ] || set +m
   echo "$pgid"
@@ -197,18 +197,16 @@ check_preconditions() {
   fi
 }
 
-# Only checked when the golden-path phase is about to run its own dev:all on these ports
+# Only checked when the golden-path phase is about to run its own dev:all on the configured ports
+# (INVAI_*_PORT, default 3000/8000/5173/5174)
 # (invai-backend/web/floor in scope). A pure typecheck/lint/test run on another repo (invai-ui,
 # invai-contracts, invai-imaging, invai-infra) never touches these ports, so it must not be
 # blocked by someone else's dev stack or gate run on them.
 check_golden_path_ports() {
-  local p pid
-  for p in 3000 8000 5173 5174; do
-    pid="$(lsof -tiTCP:"$p" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
-    if [ -n "$pid" ]; then
-      refuse "port $p is already held by pid $pid (a dev stack this gate did not start); stop it first"
-    fi
-  done
+  local msg
+  if msg="$(first_busy_port_message)"; then
+    refuse "$msg"
+  fi
 }
 
 # ---------- running one suite ----------
@@ -242,7 +240,7 @@ run_suite() {
   fi
   if [ "$repo" = invai-web ] || [ "$repo" = invai-floor ]; then
     if [ "$suite" = build ]; then
-      extra_env=(VITE_API_URL="${VITE_API_URL:-http://localhost:3000}")
+      extra_env=(VITE_API_URL="${VITE_API_URL:-http://localhost:$API_PORT}")
     fi
   fi
   if [ "${#extra_env[@]}" -gt 0 ]; then

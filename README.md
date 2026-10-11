@@ -51,9 +51,25 @@ suite and the floor suite — see `run-golden-path` for what that covers.
 - Refuses to start (exit 1, one-line reason on stderr) if another process already holds the test
   Postgres DB (`invai_test`) or the test Redis DB (Valkey DB 15) — checked for every run, since
   `invai-backend`'s `test` suite uses both. When the golden-path phase will run (backend/web/floor
-  in scope), it also refuses if ports 3000/8000/5173/5174 are already held by something this run
-  didn't start. It never kills a process it didn't start, and a trap stops everything it did
+  in scope), it also refuses if the configured ports (default 3000/8000/5173/5174, see below) are
+  already held by something this run didn't start, naming the port, the pid and the variable to set
+  (e.g. `port 8000 is held by pid 26738 (not started by this gate); stop it or set INVAI_IMAGING_PORT
+  to a free port`). It never kills a process it didn't start, and a trap stops everything it did
   start even on failure.
+- **Configurable ports (T-36-1).** `pnpm dev:all` and `pnpm gate` read `INVAI_API_PORT` (3000),
+  `INVAI_IMAGING_PORT` (8000), `INVAI_WEB_PORT` (5173) and `INVAI_FLOOR_PORT` (5174), for example
+  `INVAI_IMAGING_PORT=8100 INVAI_WEB_PORT=5183 pnpm gate invai-web` when another local project holds
+  8000 or 5173. A set variable is turned into the matching backend/E2E settings (`PORT`,
+  `BETTER_AUTH_URL`, `IMAGING_URL`, `WEB_ORIGIN`, `FLOOR_ORIGIN`, `E2E_API_URL`, `E2E_WEB_URL`,
+  `E2E_FLOOR_URL`; origins are always `http://localhost:<port>`), and these override
+  `invai-backend/.env`. With none set, nothing new is exported and `.env` still governs. The
+  Vite settings are per process: `VITE_API_URL` only for web and `VITE_API_PROXY` only for floor,
+  and only when `INVAI_API_PORT` is set. Values must be integers from 1024 to 65535, all four
+  distinct (defaults count), and not 5432, 6379, 9000, 9001, 1025, 8025 or 54322; otherwise both
+  scripts exit non-zero with a one-line reason before starting anything. One default-path change:
+  web and floor now start with `--port <port> --strictPort`, so vite fails fast instead of drifting
+  to a neighbour port. `scripts/full.sh` (container stack) does not read these variables yet.
+  Tests: `pnpm gate:test`.
 - On a full pass, writes `invai-infra/.gate/pass.json` (gitignored) with each checked repo's HEAD
   SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` allows a code repo to be pushed in
   exactly one form, as the whole Bash command with nothing before or after it (no `cd`, `&&`, `;`,

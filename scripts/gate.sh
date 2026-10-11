@@ -29,6 +29,11 @@ LOG_FILE="$GATE_DIR/run-$(date -u +%Y%m%dT%H%M%SZ).log"
 
 # shellcheck source=gate/lib.sh
 source "$SCRIPT_DIR/gate/lib.sh"
+# shellcheck source=gate/ports.sh
+source "$SCRIPT_DIR/gate/ports.sh"
+
+# Ports come from INVAI_*_PORT (T-36-1); validate and export before anything starts.
+resolve_ports || refuse "$PORT_ERROR"
 
 # ---------- repo selection ----------
 
@@ -105,7 +110,7 @@ run_golden_path() {
   local img_pgid
   img_pgid="$(start_imaging)"
   STARTED_PIDS+=("$img_pgid")
-  if ! wait_http_ok "http://localhost:8000/health"; then
+  if ! wait_http_ok "http://localhost:$IMAGING_PORT/health"; then
     echo "FAIL golden-path imaging: did not come up healthy, see $LOG_FILE"
     GATE_OVERALL_FAILED=1
     return
@@ -123,7 +128,7 @@ run_golden_path() {
   fi
 
   # Stop the imaging group (own process group), then start the whole stack once. The group is
-  # stopped as a group so nothing keeps :8000 under the new imaging.
+  # stopped as a group so nothing keeps the imaging port under the new imaging.
   stop_group "$img_pgid"
   remove_started_pid "$img_pgid"
 
@@ -131,8 +136,8 @@ run_golden_path() {
   local dev_pgid
   dev_pgid="$(start_dev_all)"
   STARTED_PIDS+=("$dev_pgid")
-  if ! wait_http_ok "http://localhost:3000/health" || ! wait_http_ok "http://localhost:8000/health" \
-      || ! wait_http_ok "http://localhost:5173" || ! wait_http_ok "http://localhost:5174"; then
+  if ! wait_http_ok "http://localhost:$API_PORT/health" || ! wait_http_ok "http://localhost:$IMAGING_PORT/health" \
+      || ! wait_http_ok "http://localhost:$WEB_PORT" || ! wait_http_ok "http://localhost:$FLOOR_PORT"; then
     echo "FAIL golden-path startup: api/imaging/web/floor did not come up healthy, see $LOG_FILE"
     GATE_OVERALL_FAILED=1
     return

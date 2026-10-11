@@ -17,6 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$INFRA_DIR/.." && pwd)"
 
+# shellcheck source=gate/ports.sh
+source "$SCRIPT_DIR/gate/ports.sh"
+resolve_ports || { echo "dev.sh: $PORT_ERROR" >&2; exit 1; }
+
 log() { printf '\n==> %s\n' "$1"; }
 warn() { printf 'WARN: %s\n' "$1" >&2; }
 
@@ -109,12 +113,21 @@ export MOCK_CARRIER_TRANSIT_HOURS="${MOCK_CARRIER_TRANSIT_HOURS:-0.001}"
 
 log "Starting api, worker, imaging, web, floor (Ctrl-C stops these; infra keeps running)"
 cd "$INFRA_DIR"
+# Per-command env (never global): the web SPA gets VITE_API_URL, the floor gets VITE_API_PROXY.
+# Both are set only when INVAI_API_PORT is, so the default path is unchanged. --strictPort makes
+# vite fail instead of drifting to a neighbour port.
+web_env=""
+floor_env=""
+if [ -n "${INVAI_API_PORT:-}" ]; then
+  web_env="VITE_API_URL=http://localhost:$API_PORT "
+  floor_env="VITE_API_PROXY=http://localhost:$API_PORT "
+fi
 exec node_modules/.bin/concurrently \
   --names "api,worker,imaging,web,floor" \
   --prefix-colors "blue,magenta,green,yellow,cyan" \
   --prefix "[{name}]" \
   "cd ../invai-backend && pnpm dev:api" \
   "cd ../invai-backend && pnpm dev:worker" \
-  "cd ../invai-imaging && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload" \
-  "cd ../invai-web && pnpm dev" \
-  "cd ../invai-floor && pnpm dev"
+  "cd ../invai-imaging && uv run uvicorn app.main:app --host 0.0.0.0 --port $IMAGING_PORT --reload" \
+  "cd ../invai-web && ${web_env}pnpm dev --port $WEB_PORT --strictPort" \
+  "cd ../invai-floor && ${floor_env}pnpm dev --port $FLOOR_PORT --strictPort"
