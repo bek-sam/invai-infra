@@ -56,4 +56,9 @@ eq "dev seed-output.json restored at the next start after SIGKILL" "$(sha "$D")"
 # static: every db:reset in gate.sh sits after gate_scratch_env; the old dev-DB wording is gone
 a="$(grep -n 'gate_scratch_env$' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"; r="$(grep -n 'pnpm db:reset' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"
 [ -n "$a" ] && [ -n "$r" ] && [ "$a" -lt "$r" ] && ok "scratch env is exported before db:reset" || bad "scratch env is exported before db:reset ($a vs $r)"
+# static: gate.sh's start block restores a left-over dev seed (A9) and refuses paid-AI env (A8) before the scratch env
+ln() { grep -n "$1" "$SRC/gate.sh" | head -n1 | cut -d: -f1; }
+rs="$(ln '^  gate_restore_dev_seed$')"; pa="$(ln '^  why="$(gate_refuse_paid_ai)" || refuse ')"; se="$(ln '^  gate_scratch_env$')"
+[ -n "$rs" ] && [ -n "$se" ] && [ "$rs" -lt "$se" ] && ok "start restores the dev seed before gate_scratch_env" || bad "start restores the dev seed before gate_scratch_env ($rs vs $se)"
+[ -n "$pa" ] && [ -n "$se" ] && [ "$pa" -lt "$se" ] && ok "start refuses paid-AI env before gate_scratch_env" || bad "start refuses paid-AI env before gate_scratch_env ($pa vs $se)"
 exit $fail
