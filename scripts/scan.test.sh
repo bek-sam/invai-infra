@@ -124,5 +124,43 @@ else
   echo "skip - gitleaks anchor cases (docker not reachable)"
 fi
 
+# 7. the T-37-5 report ignore (B-369) is one path, one rule and one whole line, anchored at both ends:
+# the same line in another file, an added key line, or a token appended to the line is still reported.
+# The line text is rebuilt from the entry's own regex, so no secret-like text lives here.
+if docker info >/dev/null 2>&1; then
+  d="$T/glcase-t375"; rm -rf "$d"; mkdir -p "$d/src/waves/37/reports" "$d/src/team"
+  line="$(python3 - "$INFRA_DIR/scan/ignores.json" <<'PYL'
+import json, re, sys
+e = [x for x in json.load(open(sys.argv[1]))["ignores"] if x["id"] == "docs-ident-list-t37-5-report"][0]
+print(re.sub(r"\\(.)", lambda m: " " if m.group(1) == "s" else m.group(1), e["line_regex"][4:-4]))
+PYL
+)"
+  tk="Qx7pL2mVn9Rt4KsB8wZc3HjD5fYa6Ue1Ng0Ti"
+  r="$d/src/waves/37/reports"
+  printf 'a\nb\nc\n%s\nd\n' "$line" >"$r/T-37-5.md"
+  printf 'a\nb\nc\n%s\napi_key = "%s"\n' "$line" "$tk" >"$r/T-37-5-next.md"
+  printf 'a\nb\nc\n%s api_key = "%s"\n' "$line" "$tk" >"$r/T-37-5-tail.md"
+  printf 'a\nb\nc\n%s\n' "$line" >"$r/T-37-6.md"
+  printf 'a\nb\nc\n%s\n' "$line" >"$d/src/team/T-37-5.md"
+  printf '{"ignores":[]}' >"$d/none.json"
+  t375() { # ignores-file label: generic-api-key hits as file:line
+    python3 "$INFRA_DIR/scan/ignores.py" gitleaks "$1" invai-docs >"$d/$2.toml"
+    docker run --rm -v "$d/src:/src:ro" -v "$d:/out" "$(sed -n 's/^GITLEAKS_IMAGE=//p' "$INFRA_DIR/scan/tools.env")" dir /src -c "/out/$2.toml" --redact --no-banner -f json -r "/out/$2.json" --exit-code 0 >/dev/null 2>&1
+    python3 - "$d/$2.json" <<'PYE'
+import json, sys
+print(" ".join(sorted(r["File"].replace("/src/", "", 1) + ":" + str(r["StartLine"]) for r in json.load(open(sys.argv[1])) if r["RuleID"] == "generic-api-key")))
+PYE
+  }
+  without="$(t375 "$d/none.json" none)"; with="$(t375 "$INFRA_DIR/scan/ignores.json" real)"
+  case " $without " in *" waves/37/reports/T-37-5.md:4 "*) ok "T-37-5 line is flagged without the ignore (red before)" ;; *) bad "line not flagged without the ignore: '$without'" ;; esac
+  case " $with " in *" waves/37/reports/T-37-5.md:4 "*) bad "T-37-5 line still flagged with the ignore: '$with'" ;; *) ok "T-37-5 line is skipped with the ignore" ;; esac
+  case " $with " in *" waves/37/reports/T-37-5-next.md:5 "*) ok "an added key line in the same folder is reported" ;; *) bad "added key line hidden: '$with'" ;; esac
+  case " $with " in *" waves/37/reports/T-37-5-tail.md:4 "*) ok "a token appended to the ignored line is reported (anchored)" ;; *) bad "appended token hidden: '$with'" ;; esac
+  case " $with " in *" waves/37/reports/T-37-6.md:4 "*) ok "the same line in another file of that folder is reported (path-scoped)" ;; *) bad "same line in a sibling file hidden: '$with'" ;; esac
+  case " $with " in *" team/T-37-5.md:4 "*) ok "the same line in another folder is reported (path-scoped)" ;; *) bad "same line in another folder hidden: '$with'" ;; esac
+else
+  echo "skip - T-37-5 ignore cases (docker not reachable)"
+fi
+
 echo "$pass passed, $failn failed"
 [ "$failn" = "0" ]

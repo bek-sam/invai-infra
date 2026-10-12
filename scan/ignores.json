@@ -47,6 +47,17 @@
       "reason": "false positive in one historical commit: the QA report quoted a command that blanks the AI keys (empty assignments, no value). Reworded in docs f577d27. Exact path + rule + commit + line",
       "owner": "platform-sre",
       "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "docs-ident-list-t37-5-report",
+      "rule": "generic-api-key",
+      "targets": ["invai-docs"],
+      "path_regex": "(^|/)waves/37/reports/T-37-5\\.md$",
+      "line_regex": "^\\n?- `service\\.ts`: per-key rules extracted into `mayRead` \\(safe key\\s->\\scompany/vendor -> kind\\) and `signKey` \\(HEAD \\+ presign, SVG attachment\\); `downloadUrl` now uses them, behavior and its tests unchanged\\. New `downloadUrls`: unique keys, one vendor sheet query for the whole list \\(`vendorReadableKeys`\\), HEADs with concurrency 8, results mapped back in input order \\(duplicates included\\); null exactly where the single call is NOT_FOUND, other errors fail the call\\.\\n?$",
+      "reason": "false positive (B-369): one bullet in the wave 37 T-37-5 report lists code identifiers and words (a rule chain written with arrows); the flagged span is two plain words joined by a slash, not a credential. Committed history cannot change. Exact path (history and working-tree forms) + rule + the whole line, anchored at both ends; any other line or file in that report is still scanned",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
     }
   ]
 }
