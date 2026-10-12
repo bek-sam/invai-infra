@@ -86,12 +86,18 @@ remove_started_pid() {
 
 cleanup() {
   local pid
+  # Put the dev seed-output.json back if a floor swap is in flight (T-41-4); defined in scratch.sh.
+  if declare -F gate_restore_dev_seed >/dev/null && [ "${GATE_SEED_SWAPPED:-0}" = 1 ]; then
+    gate_restore_dev_seed
+  fi
   for pid in "${STARTED_PIDS[@]:-}"; do
     [ -z "$pid" ] && continue
     stop_group "$pid"
   done
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------- repo/suite catalogue (mirrors .claude/hooks/invai_hooklib.py required_checks) ----------
 
@@ -343,7 +349,7 @@ write_stamp() {
 # The product's token buckets live in the local dev Valkey as `tb:<bucket>:<companyId>`. The web
 # suite leaves the demo shop's `reads` bucket part-empty, so the floor suite right after it can
 # get RATE_LIMITED. Like the DB reset, each E2E suite starts from fresh buckets. Only `tb:*` keys
-# in the one DB the dev stack uses are deleted (SCAN, never KEYS/FLUSH*), and only through the
+# in the one DB the gate stack uses (Valkey DB 9, T-41-4) are deleted (SCAN, never KEYS/FLUSH*), and only through the
 # local container. Result: prints "deleted N" on stdout, returns 0; on refusal prints a reason on
 # stdout and returns 1.
 GATE_VALKEY_CONTAINER="${GATE_VALKEY_CONTAINER:-local-valkey-1}"
@@ -370,6 +376,10 @@ reset_rate_buckets() {
   esac
   if [ "$db" -eq 15 ]; then
     echo "refused: DB 15 is the gate's test DB"
+    return 1
+  fi
+  if [ "$db" -eq 0 ]; then
+    echo "refused: DB 0 is the dev Valkey DB"
     return 1
   fi
   local keys_file n

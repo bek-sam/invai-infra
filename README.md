@@ -70,7 +70,7 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   web and floor now start with `--port <port> --strictPort`, so vite fails fast instead of drifting
   to a neighbour port. `scripts/full.sh` (container stack) does not read these variables yet.
   Tests: `pnpm gate:test`.
-- **Fresh rate-limit buckets (T-36-5).** Before each of the three E2E suites the gate deletes only the `tb:*` keys (SCAN, never KEYS/FLUSH) in the local dev Valkey DB (`REDIS_URL`, default DB 0, via `docker exec local-valkey-1`), logs the count, and fails the step if the target is not localhost or is DB 15.
+- **Fresh rate-limit buckets (T-36-5).** Before each of the three E2E suites the gate deletes only the `tb:*` keys (SCAN, never KEYS/FLUSH) in the gate's Valkey DB 9 (`GATE_REDIS_URL`; it refuses DB 0 and DB 15, via `docker exec local-valkey-1`), logs the count, and fails the step if the target is not localhost or is DB 15.
 - On a full pass, writes `invai-infra/.gate/pass.json` (gitignored) with each checked repo's HEAD
   SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` allows a code repo to be pushed in
   exactly one form, as the whole Bash command with nothing before or after it (no `cd`, `&&`, `;`,
@@ -83,8 +83,20 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   its messages point back at `pnpm gate`. Every other push form is refused (owner decision OI-22).
   `invai-docs` (docs-only) needs no stamp but is pushed only as
   `git -C /Users/bekbolsun/invai/invai-docs push origin main`.
-  A full run resets the shared dev DB, so get a slot from whoever coordinates the gate before
-  running it for real (`run-golden-path`'s "before you start").
+  A golden-path run no longer touches the dev DB (T-41-4): see the next item.
+- **Scratch database (T-41-4).** The golden-path phase resets, migrates and seeds database
+  `invai_gate` (created when missing, owner `invai`, `invai_app` granted CONNECT) with
+  `DATABASE_URL`/`MIGRATION_DATABASE_URL` pointing at it, `REDIS_URL=redis://localhost:6379/9` and
+  `SEED_OUTPUT_FILE=E2E_SEED_OUTPUT_FILE=invai-infra/.gate/seed-output.json`, exported to every
+  child (dev:all, E2E). The dev DB `invai` and Valkey DB 0 are never reset, so a gate does not
+  delete the owner's AI photo sets. The gate refuses to start if either database URL names `invai`,
+  if `REDIS_URL` is not DB 9, or if `INVAI_PAID_AI` or `IMAGE_GEN_PROVIDER` is set (spend on the
+  scratch DB would escape the dev ledger). The floor suite reads the fixed
+  `invai-backend/seed-output.json`, so for that suite only the gate copies its seed output there,
+  keeping the dev file as `.gate/seed-output.dev.json`, and puts it back on every exit path (EXIT,
+  INT, TERM traps); after a SIGKILL the next gate start restores it first. Open item B-floor-seed-env:
+  the floor E2E helper should honor `E2E_SEED_OUTPUT_FILE` (qa-engineer), then the swap can go.
+  Tests: `pnpm gate:test`.
 
 ## Local services (infra only)
 

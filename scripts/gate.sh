@@ -5,8 +5,8 @@
 #
 # - Runs typecheck, lint, the full test suite (and `pnpm build` for web/floor; imaging: ruff +
 #   pytest) per repo.
-# - If invai-backend, invai-web or invai-floor is in scope, also resets/migrates/seeds the dev DB
-#   (imaging up) and runs the API golden path, the browser suite and the floor suite.
+# - If invai-backend, invai-web or invai-floor is in scope, also resets/migrates/seeds the scratch DB
+#   invai_gate on Valkey DB 9 (T-41-4; never the dev DB `invai`; imaging up) and runs the API golden path, the browser suite and the floor suite.
 # - Refuses to start rather than fight another process (AC3); never kills anything it didn't
 #   start (trap in lib.sh stops only PIDs this run recorded).
 # - On a full pass, writes invai-infra/.gate/pass.json (gitignored) with each repo's HEAD SHA and
@@ -31,6 +31,8 @@ LOG_FILE="$GATE_DIR/run-$(date -u +%Y%m%dT%H%M%SZ).log"
 source "$SCRIPT_DIR/gate/lib.sh"
 # shellcheck source=gate/ports.sh
 source "$SCRIPT_DIR/gate/ports.sh"
+# shellcheck source=gate/scratch.sh
+source "$SCRIPT_DIR/gate/scratch.sh"
 
 # Ports come from INVAI_*_PORT (T-36-1); validate and export before anything starts.
 resolve_ports || refuse "$PORT_ERROR"
@@ -69,6 +71,13 @@ for r in "${GATE_REPOS[@]}"; do
     invai-backend|invai-web|invai-floor) needs_golden_path=1 ;;
   esac
 done
+
+if [ "$needs_golden_path" -eq 1 ]; then
+  # A9: a previous run killed with SIGKILL may have left the dev seed-output.json swapped.
+  gate_restore_dev_seed
+  why="$(gate_refuse_paid_ai)" || refuse "$why in the gate's environment; paid AI spend on $GATE_DB_NAME would escape the dev ledger"
+  gate_scratch_env
+fi
 
 log "gate run: repos=${GATE_REPOS[*]} golden_path=$needs_golden_path"
 
@@ -116,7 +125,12 @@ run_golden_path() {
     return
   fi
 
-  section "golden path: reset, migrate, seed"
+  section "golden path: reset, migrate, seed on $GATE_DB_NAME"
+  if ! gate_ensure_db; then
+    echo "FAIL golden-path database: could not create $GATE_DB_NAME, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
   local seed_out seed_rc
   seed_out="$(cd "$WORKSPACE_DIR/invai-backend" && pnpm db:reset && pnpm db:migrate && pnpm db:seed 2>&1)"
   seed_rc=$?
@@ -170,8 +184,10 @@ run_golden_path() {
 
   section "golden path: floor suite"
   gate_reset_buckets_for "floor suite" || return
+  gate_swap_dev_seed || { echo "FAIL golden-path floor seed swap: see $LOG_FILE"; GATE_OVERALL_FAILED=1; return; }
   out="$(cd "$WORKSPACE_DIR/invai-floor" && pnpm e2e 2>&1)"
   rc=$?
+  gate_restore_dev_seed
   log "$out"
   if [ $rc -eq 0 ]; then
     echo "PASS invai-floor e2e $(count_passed "$out") passed"
