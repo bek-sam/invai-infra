@@ -23,7 +23,7 @@
     "stop": "bash scripts/stop.sh",
     "reset-db": "bash scripts/reset-db.sh",
     "gate": "bash scripts/gate.sh",
-    "gate:test": "bash scripts/gate/order.test.sh && bash scripts/gate/ports.test.sh",
+    "gate:test": "bash scripts/gate/order.test.sh && bash scripts/gate/ports.test.sh && bash scripts/gate/buckets.test.sh",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
   },

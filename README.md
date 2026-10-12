@@ -70,6 +70,7 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   web and floor now start with `--port <port> --strictPort`, so vite fails fast instead of drifting
   to a neighbour port. `scripts/full.sh` (container stack) does not read these variables yet.
   Tests: `pnpm gate:test`.
+- **Fresh rate-limit buckets (T-36-5).** Before each of the three E2E suites the gate deletes only the `tb:*` keys (SCAN, never KEYS/FLUSH) in the local dev Valkey DB (`REDIS_URL`, default DB 0, via `docker exec local-valkey-1`), logs the count, and fails the step if the target is not localhost or is DB 15.
 - On a full pass, writes `invai-infra/.gate/pass.json` (gitignored) with each checked repo's HEAD
   SHA and a UTC timestamp. `.claude/hooks/guard-bash.py` allows a code repo to be pushed in
   exactly one form, as the whole Bash command with nothing before or after it (no `cd`, `&&`, `;`,

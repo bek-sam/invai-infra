@@ -337,3 +337,67 @@ write_stamp() {
   mv "$STAMP_FILE.tmp" "$STAMP_FILE"
   log "wrote stamp $STAMP_FILE"
 }
+
+# ---------- local rate-limit buckets (T-36-5, B-350) ----------
+#
+# The product's token buckets live in the local dev Valkey as `tb:<bucket>:<companyId>`. The web
+# suite leaves the demo shop's `reads` bucket part-empty, so the floor suite right after it can
+# get RATE_LIMITED. Like the DB reset, each E2E suite starts from fresh buckets. Only `tb:*` keys
+# in the one DB the dev stack uses are deleted (SCAN, never KEYS/FLUSH*), and only through the
+# local container. Result: prints "deleted N" on stdout, returns 0; on refusal prints a reason on
+# stdout and returns 1.
+GATE_VALKEY_CONTAINER="${GATE_VALKEY_CONTAINER:-local-valkey-1}"
+
+reset_rate_buckets() {
+  local url="${GATE_REDIS_URL:-${REDIS_URL:-redis://localhost:6379}}"
+  local rest hostport host db
+  case "$url" in
+    redis://*) rest="${url#redis://}" ;;
+    *) echo "refused: target '$url' is not a redis:// URL"; return 1 ;;
+  esac
+  rest="${rest#*@}"
+  hostport="${rest%%/*}"
+  host="${hostport%%:*}"
+  db=0
+  case "$rest" in */*) db="${rest#*/}"; db="${db%%\?*}" ;; esac
+  [ -z "$db" ] && db=0
+  case "$host" in
+    localhost | 127.0.0.1) ;;
+    *) echo "refused: target host '$host' is not local"; return 1 ;;
+  esac
+  case "$db" in
+    '' | *[!0-9]*) echo "refused: DB '$db' is not a number"; return 1 ;;
+  esac
+  if [ "$db" -eq 15 ]; then
+    echo "refused: DB 15 is the gate's test DB"
+    return 1
+  fi
+  local keys_file n
+  keys_file="$(mktemp)"
+  if ! docker exec "$GATE_VALKEY_CONTAINER" valkey-cli -n "$db" --scan --pattern 'tb:*' >"$keys_file" 2>/dev/null; then
+    rm -f "$keys_file"
+    echo "refused: cannot reach container $GATE_VALKEY_CONTAINER"
+    return 1
+  fi
+  n=0
+  local key
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    docker exec "$GATE_VALKEY_CONTAINER" valkey-cli -n "$db" UNLINK "$key" >/dev/null 2>&1 && n=$((n + 1))
+  done <"$keys_file"
+  rm -f "$keys_file"
+  echo "deleted $n"
+  return 0
+}
+
+# Gate step: runs reset_rate_buckets before one E2E suite; a refusal fails the golden-path step.
+gate_reset_buckets_for() {
+  local suite="$1" out
+  if out="$(reset_rate_buckets)"; then
+    log "rate buckets reset before $suite: $out tb:* keys"
+    return 0
+  fi
+  echo "FAIL golden-path rate-limit reset before $suite: $out"
+  GATE_OVERALL_FAILED=1
+  return 1
+}

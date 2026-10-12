@@ -144,6 +144,7 @@ run_golden_path() {
   fi
 
   section "golden path: API suite"
+  gate_reset_buckets_for "API suite" || return
   local out rc
   out="$(cd "$WORKSPACE_DIR/invai-web" && E2E_API=1 pnpm e2e e2e/api-golden-path.spec.ts 2>&1)"
   rc=$?
@@ -156,6 +157,7 @@ run_golden_path() {
   fi
 
   section "golden path: browser suite (golden path + screens smoke)"
+  gate_reset_buckets_for "browser suite" || return
   out="$(cd "$WORKSPACE_DIR/invai-web" && pnpm e2e 2>&1)"
   rc=$?
   log "$out"
@@ -167,6 +169,7 @@ run_golden_path() {
   fi
 
   section "golden path: floor suite"
+  gate_reset_buckets_for "floor suite" || return
   out="$(cd "$WORKSPACE_DIR/invai-floor" && pnpm e2e 2>&1)"
   rc=$?
   log "$out"
