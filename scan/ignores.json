@@ -58,6 +58,18 @@
       "reason": "false positive (B-369): one bullet in the wave 37 T-37-5 report lists code identifiers and words (a rule chain written with arrows); the flagged span is two plain words joined by a slash, not a credential. Committed history cannot change. Exact path (history and working-tree forms) + rule + the whole line, anchored at both ends; any other line or file in that report is still scanned",
       "owner": "platform-sre",
       "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "docs-ident-list-t38-4-report-f3a0903",
+      "rule": "generic-api-key",
+      "targets": ["invai-docs"],
+      "path_regex": "^waves/38/reports/T-38-4\\.md$",
+      "line_regex": "^\\n?\\- Why not a secret: the line is a bullet listing code identifiers; the flagged span is the words \"key\\s->\\scompany/vendor\" \\(two words joined by a slash, from a rule chain written with an arrow\\)\\. The rule reads \"key\", an arrow operator and a 14\\-char value\\. No credential on the line\\.\\n?$",
+      "commits": ["f3a09038005506a8126788e307812a23918d1046"],
+      "reason": "false positive in one historical commit: the T-38-4 round 1 report quoted the already-ignored identifier-list phrase from the T-37-5 report (two plain words joined by a slash, not a credential). Local history is not rewritten; the working-tree line is reworded (docs 248ae6d). Exact path + rule + this one commit + the whole line, anchored at both ends; the tree and every later commit are still scanned",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
     }
   ]
 }

@@ -137,9 +137,8 @@ PYL
 )"
   tk="Qx7pL2mVn9Rt4KsB8wZc3HjD5fYa6Ue1Ng0Ti"
   r="$d/src/waves/37/reports"
-  printf 'a\nb\nc\n%s\nd\n' "$line" >"$r/T-37-5.md"
-  printf 'a\nb\nc\n%s\napi_key = "%s"\n' "$line" "$tk" >"$r/T-37-5-next.md"
-  printf 'a\nb\nc\n%s api_key = "%s"\n' "$line" "$tk" >"$r/T-37-5-tail.md"
+  # the extra cases live in the ignored file itself (the exact path), so only the line regex can reject them
+  printf 'a\nb\nc\n%s\napi_key = "%s"\n%s api_key = "%s"\n' "$line" "$tk" "$line" "$tk" >"$r/T-37-5.md"
   printf 'a\nb\nc\n%s\n' "$line" >"$r/T-37-6.md"
   printf 'a\nb\nc\n%s\n' "$line" >"$d/src/team/T-37-5.md"
   printf '{"ignores":[]}' >"$d/none.json"
@@ -154,12 +153,52 @@ PYE
   without="$(t375 "$d/none.json" none)"; with="$(t375 "$INFRA_DIR/scan/ignores.json" real)"
   case " $without " in *" waves/37/reports/T-37-5.md:4 "*) ok "T-37-5 line is flagged without the ignore (red before)" ;; *) bad "line not flagged without the ignore: '$without'" ;; esac
   case " $with " in *" waves/37/reports/T-37-5.md:4 "*) bad "T-37-5 line still flagged with the ignore: '$with'" ;; *) ok "T-37-5 line is skipped with the ignore" ;; esac
-  case " $with " in *" waves/37/reports/T-37-5-next.md:5 "*) ok "an added key line in the same folder is reported" ;; *) bad "added key line hidden: '$with'" ;; esac
-  case " $with " in *" waves/37/reports/T-37-5-tail.md:4 "*) ok "a token appended to the ignored line is reported (anchored)" ;; *) bad "appended token hidden: '$with'" ;; esac
+  case " $with " in *" waves/37/reports/T-37-5.md:5 "*) ok "an added key line in the ignored file itself is reported" ;; *) bad "added key line hidden: '$with'" ;; esac
+  case " $with " in *" waves/37/reports/T-37-5.md:6 "*) ok "a token appended to the ignored line, same file, is reported (anchored at the end)" ;; *) bad "appended token hidden: '$with'" ;; esac
   case " $with " in *" waves/37/reports/T-37-6.md:4 "*) ok "the same line in another file of that folder is reported (path-scoped)" ;; *) bad "same line in a sibling file hidden: '$with'" ;; esac
   case " $with " in *" team/T-37-5.md:4 "*) ok "the same line in another folder is reported (path-scoped)" ;; *) bad "same line in another folder hidden: '$with'" ;; esac
 else
   echo "skip - T-37-5 ignore cases (docker not reachable)"
+fi
+
+# 8. the T-38-4 round 1 report ignore is pinned to one commit: the same line at the same path in any other
+# commit, or in the working tree, is still reported. Runs on a scratch repo; the entry's commit is swapped for
+# the scratch commit A (the real sha only exists in invai-docs, where `scripts/scan.sh secrets` proves it).
+if docker info >/dev/null 2>&1; then
+  d="$T/glcase-t384"; rm -rf "$d"; mkdir -p "$d/repo/waves/38/reports"; g="git -C $d/repo -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false"
+  line="$(python3 - "$INFRA_DIR/scan/ignores.json" <<'PYL'
+import json, re, sys
+e = [x for x in json.load(open(sys.argv[1]))["ignores"] if x["id"] == "docs-ident-list-t38-4-report-f3a0903"][0]
+print(re.sub(r"\\(.)", lambda m: " " if m.group(1) == "s" else m.group(1), e["line_regex"][4:-4]))
+PYL
+)"
+  f="$d/repo/waves/38/reports/T-38-4.md"
+  git -C "$d/repo" init -q; printf 'a\nb\nc\n%s\n' "$line" >"$f"; $g add . && $g commit -qm A
+  shaA="$(git -C "$d/repo" rev-parse HEAD)"; $g rm -q waves/38/reports/T-38-4.md && $g commit -qm B
+  mkdir -p "$d/repo/waves/38/reports"; printf 'a\nb\nc\n%s\n' "$line" >"$f"; $g add . && $g commit -qm C; shaC="$(git -C "$d/repo" rev-parse HEAD)"
+  python3 - "$INFRA_DIR/scan/ignores.json" "$d/pinned.json" "$shaA" <<'PYP'
+import json, sys
+d = json.load(open(sys.argv[1])); e = [x for x in d["ignores"] if x["id"] == "docs-ident-list-t38-4-report-f3a0903"][0]
+e["commits"] = [sys.argv[3]]; json.dump({"ignores": [e]}, open(sys.argv[2], "w"))
+PYP
+  printf '{"ignores":[]}' >"$d/none.json"
+  t384() { # ignores-file label mode: generic-api-key hits as commit-or-tree:line
+    python3 "$INFRA_DIR/scan/ignores.py" gitleaks "$1" invai-docs >"$d/$2.toml"
+    docker run --rm -v "$d/repo:/repo:ro" -v "$d:/out" "$(sed -n 's/^GITLEAKS_IMAGE=//p' "$INFRA_DIR/scan/tools.env")" "$3" /repo -c "/out/$2.toml" --redact --no-banner -f json -r "/out/$2.json" --exit-code 0 >/dev/null 2>&1
+    python3 - "$d/$2.json" <<'PYE'
+import json, sys
+print(" ".join(sorted((r.get("Commit") or "tree")[:7] + ":" + str(r["StartLine"]) for r in json.load(open(sys.argv[1])) if r["RuleID"] == "generic-api-key")))
+PYE
+  }
+  a="${shaA:0:7}"; c="${shaC:0:7}"
+  h0="$(t384 "$d/none.json" n git)"; h1="$(t384 "$d/pinned.json" p git)"; w1="$(t384 "$d/pinned.json" w dir)"
+  case " $h0 " in *" $a:4 "*) fa=1 ;; *) fa=0 ;; esac; case " $h0 " in *" $c:4 "*) [ "$fa" = 1 ] && fc=1 || fc=0 ;; *) fc=0 ;; esac
+  case "$fc" in 1) ok "T-38-4 line is flagged in both commits without the ignore (red before)" ;; *) bad "line not flagged in both commits without the ignore: '$h0'" ;; esac
+  case " $h1 " in *" $a:4 "*) bad "the pinned commit is still flagged: '$h1'" ;; *) ok "T-38-4 line is skipped in the pinned commit" ;; esac
+  case " $h1 " in *" $c:4 "*) ok "the same line at the same path in a later commit is reported" ;; *) bad "later commit hidden: '$h1'" ;; esac
+  case " $w1 " in *" tree:4 "*) ok "the same line in the working tree is reported" ;; *) bad "working tree hidden: '$w1'" ;; esac
+else
+  echo "skip - T-38-4 ignore cases (docker not reachable)"
 fi
 
 echo "$pass passed, $failn failed"
