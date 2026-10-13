@@ -2,7 +2,7 @@
 # Gate cleanup (T-42-2). Sourced by gate.sh after lib.sh and scratch.sh.
 #
 # Every gate run seeds the scratch database invai_gate and writes about 150 MB of files into the
-# local MinIO bucket under that seed's company ids. This file removes those files at the end of
+# local MinIO bucket invai-gate (T-45-5; never the dev bucket invai-local) under that seed's company ids. This file removes those files at the end of
 # every run (EXIT trap) and, for a run that was killed without its trap, at the start of the next
 # one (A2), and flushes the scratch Valkey DB. Only prefixes read from invai_gate.companies are
 # ever deleted, each as the exact `<uuid>/` prefix.
@@ -13,7 +13,7 @@ GATE_CLEANUP_ARMED=0
 
 # gate_s3 <args>: the MinIO helper (tests replace this function or set GATE_S3_TOOL).
 gate_s3() {
-  if [ -n "${GATE_S3_TOOL:-}" ]; then "$GATE_S3_TOOL" "$@"; else node "$GATE_TOOLS_DIR/s3tool.mjs" "$@"; fi
+  if [ -n "${GATE_S3_TOOL:-}" ]; then S3_BUCKET=invai-gate "$GATE_S3_TOOL" "$@"; else S3_BUCKET=invai-gate node "$GATE_TOOLS_DIR/s3tool.mjs" "$@"; fi
 }
 
 # gate_company_ids <database>: company ids, one per line. Fails when the database or table is

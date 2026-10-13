@@ -76,7 +76,9 @@ services:
       mc anonymous set none local/invai-local &&
       mc version enable local/invai-local &&
       mc ilm import local/invai-local < /lifecycle.json &&
-      echo 'minio-init: bucket invai-local ready (versioned, 7-day old-version expiry)'
+      mc mb --ignore-existing local/invai-gate &&
+      mc anonymous set none local/invai-gate &&
+      echo 'minio-init: bucket invai-local ready (versioned, 7-day old-version expiry); bucket invai-gate ready (private, unversioned: the gate deletes its own files for real)'
       "
     restart: "no"
 

@@ -10,7 +10,7 @@ fail=0
 # Hermetic (T-42-2 round 2, incident 2026-10-13): every path that could reach a delete points at a
 # dead endpoint and containers that do not exist, so a removed fence fails a test instead of
 # deleting. The run aborts unless the endpoint is proven dead first.
-export S3_ENDPOINT=http://127.0.0.1:1 S3_BUCKET=invai-local
+export S3_ENDPOINT=http://127.0.0.1:1 S3_BUCKET=invai-gate
 export GATE_PG_CONTAINER=no-such-pg-container GATE_VALKEY_CONTAINER=no-such-valkey-container PURGE_PG_CONTAINER=no-such-pg-container
 export DATABASE_URL=postgres://nobody:nobody@127.0.0.1:1/no_such_db MIGRATION_DATABASE_URL=postgres://nobody:nobody@127.0.0.1:1/no_such_db REDIS_URL=redis://127.0.0.1:1/9
 unset GATE_S3_TOOL PURGE_S3_TOOL
@@ -118,18 +118,31 @@ for bad_prefix in "" "/" "manual/" "$A" "${UP}/" "$A/x/"; do
   eq "s3tool delete-prefix refuses '$bad_prefix'" "$(st delete-prefix "$bad_prefix")" 2
 done
 eq "s3tool refuses a non-local endpoint" "$(S3_ENDPOINT=https://s3.amazonaws.com st scan)" 2
-eq "s3tool refuses to delete outside bucket invai-local" "$(S3_BUCKET=invai-ci-x st delete-prefix "$A/")" 2
+eq "s3tool refuses to delete outside bucket invai-gate" "$(S3_BUCKET=invai-ci-x st delete-prefix "$A/")" 2
+eq "s3tool refuses to delete in the dev bucket invai-local (T-45-5)" "$(S3_BUCKET=invai-local st delete-prefix "$A/")" 2
+eq "s3tool refuses to delete in a lookalike bucket invai-gate2" "$(S3_BUCKET=invai-gate2 st delete-prefix "$A/")" 2
+eq "s3tool refuses to delete in an empty-name bucket (falls back to invai-gate, dead endpoint = 1 not 0)" "$(S3_BUCKET= st delete-prefix "$A/")" 1
+eq "s3tool ensure-bucket refuses invai-local" "$(S3_BUCKET=invai-local st ensure-bucket)" 2
+eq "s3tool ensure-bucket refuses another name" "$(S3_BUCKET=invai-x st ensure-bucket)" 2
 eq "s3tool delete-prefix with no argument is refused" "$(st delete-prefix)" 2
 eq "s3tool refuses a 37-char non-uuid prefix" "$(st delete-prefix "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz/")" 2
 eq "s3tool refuses a prefix with a trailing extra path" "$(st delete-prefix "$A/$A/")" 2
 msg="$(node "$S" delete-prefix "" 2>&1 >/dev/null)"
 case "$msg" in *refusing*) ok "empty prefix is refused by s3tool itself (message)" ;; *) bad "empty prefix refusal message ($msg)" ;; esac
+msg="$(S3_BUCKET=invai-local node "$S" delete-prefix "$A/" 2>&1 >/dev/null)"
+case "$msg" in *"refusing to delete in bucket 'invai-local'"*) ok "invai-local is refused with no request sent" ;; *) bad "invai-local refusal message ($msg)" ;; esac
 msg="$(S3_BUCKET=invai-ci-x node "$S" delete-prefix "$A/" 2>&1 >/dev/null)"
 case "$msg" in *"refusing to delete in bucket"*) ok "wrong bucket is refused before any network call" ;; *) bad "wrong bucket message ($msg)" ;; esac
 msg="$(node "$S" delete-prefix "$A/" 2>&1 >/dev/null)"
 case "$msg" in *ECONN*|*connect*|*refus*) ok "a valid prefix gets past the fences and fails only on the dead endpoint" ;; *) bad "valid prefix reaches the network ($msg)" ;; esac
 if grep -Eq 'DeleteBucket|DeleteObjectCommand\b' "$S"; then bad "s3tool has no bucket-level or single-key delete"; else ok "s3tool has no bucket-level or single-key delete"; fi
 eq "the only delete call is the validated delete-prefix" "$(grep -c 'DeleteObjectsCommand(' "$S")" 1
+
+# gate_s3 pins the bucket for every cleanup call, whatever the caller exported
+out="$( ( export LOG_FILE="$T/log"; source "$SRC/gate/lib.sh"; source "$SRC/gate/cleanup.sh"
+  GATE_S3_TOOL="$T/envtool"; printf '#!/bin/sh\necho "$S3_BUCKET"\n' >"$T/envtool"; chmod +x "$T/envtool"
+  S3_BUCKET=invai-local gate_s3 delete-prefix x ) 2>/dev/null )"
+eq "cleanup's gate_s3 pins S3_BUCKET=invai-gate even when invai-local is exported" "$out" "invai-gate"
 
 g_="$SRC/gate.sh"
 # static: wiring in gate.sh, lib.sh and dev.sh

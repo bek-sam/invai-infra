@@ -49,6 +49,37 @@ gate_scratch_env() {
   log "gate database: $GATE_DB_NAME (dev database invai is not touched); valkey DB $GATE_REDIS_DB; seed output $GATE_SEED_FILE"
 }
 
+# ---------- gate bucket (T-45-5, B-402) ----------
+#
+# Every golden-path child that touches S3 (imaging, the seed, api, worker) writes to the gate's own
+# bucket, never the dev bucket invai-local. Both apps let an exported S3_BUCKET beat their .env
+# file (backend src/env.ts loadEnvFile never overrides; imaging pydantic-settings ranks env above
+# env_file). It is exported only inside the golden path, after the per-repo suites: the backend
+# `pnpm test` refuses any bucket that is not a test bucket.
+
+GATE_S3_BUCKET=invai-gate
+
+# gate_bucket_check <bucket>: allow-list, exactly invai-gate. Prints a reason and returns 1 otherwise.
+gate_bucket_check() {
+  [ -n "$1" ] || { echo "S3_BUCKET is empty"; return 1; }
+  [ "$1" = "$GATE_S3_BUCKET" ] || { echo "S3_BUCKET is '$1', not $GATE_S3_BUCKET"; return 1; }
+  return 0
+}
+
+# gate_bucket_env: export S3_BUCKET=invai-gate for the golden-path children, then verify the
+# effective value (refuses on anything but invai-gate).
+gate_bucket_env() {
+  local why
+  export S3_BUCKET="$GATE_S3_BUCKET"
+  why="$(gate_bucket_check "${S3_BUCKET:-}")" || refuse "bucket guard: $why"
+  log "gate bucket: $S3_BUCKET (dev bucket invai-local is not written or deleted)"
+}
+
+# gate_ensure_bucket: create invai-gate when missing (idempotent), before the seed.
+gate_ensure_bucket() {
+  S3_BUCKET="$GATE_S3_BUCKET" gate_s3 ensure-bucket >>"$LOG_FILE" 2>&1
+}
+
 # gate_ensure_db: create invai_gate (owner invai) when missing and let the app role connect (A7).
 gate_ensure_db() {
   local have

@@ -61,4 +61,25 @@ ln() { grep -n "$1" "$SRC/gate.sh" | head -n1 | cut -d: -f1; }
 rs="$(ln '^  gate_restore_dev_seed$')"; pa="$(ln '^  why="$(gate_refuse_paid_ai)" || refuse ')"; se="$(ln '^  gate_scratch_env$')"
 [ -n "$rs" ] && [ -n "$se" ] && [ "$rs" -lt "$se" ] && ok "start restores the dev seed before gate_scratch_env" || bad "start restores the dev seed before gate_scratch_env ($rs vs $se)"
 [ -n "$pa" ] && [ -n "$se" ] && [ "$pa" -lt "$se" ] && ok "start refuses paid-AI env before gate_scratch_env" || bad "start refuses paid-AI env before gate_scratch_env ($pa vs $se)"
+
+# gate bucket (T-45-5): allow-list, exact name
+bc() { env_for "gate_bucket_check '$1'" 2>&1; echo "rc=$?"; }
+case "$(bc invai-gate)" in *rc=0) ok "bucket invai-gate passes" ;; *) bad "bucket invai-gate passes" ;; esac
+for b in invai-local "" invai-gate2 invai-full invai-gat; do
+  case "$(bc "$b")" in *rc=1) ok "bucket guard refuses '$b'" ;; *) bad "bucket guard refuses '$b'" ;; esac
+done
+case "$(env_for 'export S3_BUCKET=invai-local; gate_bucket_env >/dev/null 2>&1; echo "$S3_BUCKET"')" in invai-gate) ok "gate_bucket_env overrides an exported invai-local" ;; *) bad "gate_bucket_env overrides an exported invai-local" ;; esac
+# the bucket is exported only inside the golden path, never before the per-repo suites (A8)
+gb="$(grep -n 'gate_bucket_env$' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"; gp="$(grep -n '^run_golden_path()' "$SRC/gate.sh" | cut -d: -f1)"
+sc="$(grep -n 'run_suite "\$r"' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"
+[ -n "$gb" ] && [ -n "$gp" ] && [ "$gb" -gt "$gp" ] && [ "$gb" -gt "$sc" ] && ok "gate_bucket_env runs inside run_golden_path, after the per-repo suites" || bad "gate_bucket_env placement ($gb vs $gp, $sc)"
+sd="$(grep -n 'start_imaging)' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"; eb="$(grep -n 'gate_ensure_bucket' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"
+rs="$(grep -n 'pnpm db:reset' "$SRC/gate.sh" | head -n1 | cut -d: -f1)"
+[ -n "$eb" ] && [ "$gb" -lt "$sd" ] && [ "$eb" -lt "$sd" ] && [ "$eb" -lt "$rs" ] && ok "bucket exported and created before imaging and the seed" || bad "bucket order ($gb $eb $sd $rs)"
+# the compose one-shot creates invai-gate privately and unversioned
+dc="$SRC/../local/docker-compose.yml"
+svc="$(sed -n '/^  minio-init:/,/restart:/p' "$dc")"
+case "$svc" in *"mc mb --ignore-existing local/invai-gate"*) ok "minio-init creates invai-gate" ;; *) bad "minio-init creates invai-gate" ;; esac
+case "$svc" in *"mc anonymous set none local/invai-gate"*) ok "minio-init makes invai-gate private" ;; *) bad "minio-init makes invai-gate private" ;; esac
+case "$svc" in *"version enable local/invai-gate"*) bad "invai-gate stays unversioned" ;; *) ok "invai-gate stays unversioned" ;; esac
 exit $fail

@@ -98,21 +98,31 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   the floor E2E helper should honor `E2E_SEED_OUTPUT_FILE` (qa-engineer), then the swap can go.
   Tests: `pnpm gate:test`.
 - **The gate cleans up after itself (T-42-2).** Each golden-path run adds about 150 MB of files to
-  MinIO bucket `invai-local` under the seed's company ids. When the stack has stopped (the EXIT
+  MinIO bucket `invai-gate` (T-45-5) under the seed's company ids. When the stack has stopped (the EXIT
   trap, so pass, fail, Ctrl-C and error exits), the gate reads the company ids from
   `invai_gate.companies`, deletes each exact `<uuid>/` prefix, flushes Valkey DB 9 (it refuses any
   other DB number), and logs one line with the prefix count and bytes. A run killed with SIGKILL
   skips the trap, so the next run does the same for the previous seed before its reset. Fences
   (each pinned by `scripts/gate/cleanup.test.sh`): the database name must be exactly `invai_gate`;
   a prefix that is also a company id in `invai` is refused; an empty `invai` company list is a
-  refusal; only `<uuid>/` prefixes of bucket `invai-local` on a localhost endpoint are ever deleted
+  refusal; only `<uuid>/` prefixes of bucket `invai-gate` on a localhost endpoint are ever deleted
   (`scripts/gate/s3tool.mjs`, no bucket-level delete); `delete-prefix` itself refuses an empty,
-  non-UUID or slash-less prefix and any bucket but `invai-local`, whatever the caller checked.
+  non-UUID or slash-less prefix and any bucket but `invai-gate` (the dev bucket `invai-local` included), whatever the caller checked.
   Valkey DB 9 is also used by the compose `full` profile, so the gate refuses to start, and the
   flush refuses, while any full-profile container (`local-api-1`, `-worker-1`, ...) runs; run
   `scripts/full.sh down` first. The two cleanup tests are hermetic: they pin `S3_ENDPOINT` to the
   closed port 1, use non-existent containers and databases, and abort unless that endpoint is
   proven dead, so a mutated fence cannot delete real files. Logs and traces under `.gate/` stay.
+- **The gate has its own bucket (T-45-5, B-402).** Inside `run_golden_path`, after the per-repo suites
+  (the backend `pnpm test` refuses non-test buckets), the gate exports `S3_BUCKET=invai-gate` and
+  checks it against an allow-list (exactly `invai-gate`, else it refuses to start). The seed and the
+  dev:all children (api, worker, imaging) inherit it: backend `loadEnvFile` never overrides a set
+  variable and imaging's pydantic-settings ranks env above `.env`. `minio-init` creates `invai-gate`
+  (private, unversioned, so deleted gate files really go) and `s3tool.mjs ensure-bucket` creates it if
+  missing, before the seed. `s3tool` defaults to `invai-gate`; a read-only count of the dev bucket
+  needs `S3_BUCKET=invai-local node scripts/gate/s3tool.mjs count <uuid>/`. `pnpm purge:orphans` reads
+  `invai-local`, so run it with `S3_BUCKET=invai-local` for the dry run; its `--apply` delete is now refused by `s3tool`.
+
 - **No file watchers in the gate (B-388).** The gate starts `dev:all` with `INVAI_NO_WATCH=1`;
   `dev.sh` then runs the api and worker with plain `tsx` and imaging without `--reload`, so an edit
   made during a gate run cannot restart them. A plain `pnpm dev:all` still watches.

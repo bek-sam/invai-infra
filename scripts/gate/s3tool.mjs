@@ -1,27 +1,29 @@
 #!/usr/bin/env node
 // Local MinIO helper for the gate cleanup and the orphan purge (T-42-2). Uses the S3 client that
 // invai-backend already installs; talks only to a localhost endpoint and only ever deletes under
-// one exact `<uuid>/` prefix of bucket invai-local.
+// one exact `<uuid>/` prefix of bucket invai-gate (T-45-5: the gate's own bucket, never the dev bucket invai-local).
 //
 //   s3tool.mjs scan                  TSV per top-level prefix: prefix<TAB>objects<TAB>bytes<TAB>newest-epoch-seconds
 //   s3tool.mjs buckets               names of all buckets, one per line (read only)
 //   s3tool.mjs count <prefix>        prints "objects<TAB>bytes" under the prefix (read only)
 //   s3tool.mjs stat <key>...         prints "<key><TAB>ok|MISSING" per key (read only)
 //   s3tool.mjs delete-prefix <uuid>/ deletes every object under that prefix, prints "objects<TAB>bytes"
+//   s3tool.mjs ensure-bucket         creates bucket invai-gate when missing (idempotent); refuses any other name
 //
 // Env: S3_ENDPOINT (default http://localhost:9000), S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET
-// (default invai-local; `scan`, `count` and `stat` accept any local bucket, deletes accept only invai-local).
+// (default invai-gate; `scan`, `count` and `stat` accept any local bucket, so a read-only count of invai-local
+// needs S3_BUCKET=invai-local explicitly; deletes and ensure-bucket accept only invai-gate).
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const backend = resolve(here, "../../../invai-backend/package.json");
-const { S3Client, ListObjectsV2Command, DeleteObjectsCommand, HeadObjectCommand, ListBucketsCommand } =
+const { S3Client, ListObjectsV2Command, DeleteObjectsCommand, HeadObjectCommand, ListBucketsCommand, HeadBucketCommand, CreateBucketCommand } =
   createRequire(backend)("@aws-sdk/client-s3");
 
 const UUID_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/$/;
-const DELETE_BUCKET = "invai-local";
+const DELETE_BUCKET = "invai-gate";
 const endpoint = process.env.S3_ENDPOINT || "http://localhost:9000";
 const bucket = process.env.S3_BUCKET || DELETE_BUCKET;
 
@@ -93,6 +95,16 @@ if (cmd === "scan") {
     }
     process.stdout.write(`${key}\t${state}\n`);
   }
+} else if (cmd === "ensure-bucket") {
+  if (bucket !== DELETE_BUCKET) die(`refusing to create bucket '${bucket}'`);
+  try {
+    await s3.send(new HeadBucketCommand({ Bucket: bucket }));
+    process.stdout.write("exists\n");
+  } catch (e) {
+    if (e?.$metadata?.httpStatusCode !== 404 && e?.name !== "NotFound") throw e;
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+    process.stdout.write("created\n");
+  }
 } else if (cmd === "delete-prefix") {
   const prefix = args[0] ?? "";
   if (!UUID_PREFIX.test(prefix)) die(`refusing prefix '${prefix}': must be exactly <uuid>/`);
@@ -116,5 +128,5 @@ if (cmd === "scan") {
   }
   process.stdout.write(`${n}\t${b}\n`);
 } else {
-  die("usage: scan | buckets | count <prefix> | stat <key>... | delete-prefix <uuid>/");
+  die("usage: scan | buckets | count <prefix> | stat <key>... | ensure-bucket | delete-prefix <uuid>/");
 }

@@ -124,6 +124,13 @@ run_golden_path() {
     GATE_OVERALL_FAILED=1
     return
   fi
+  # T-45-5: every child below that touches S3 writes to bucket invai-gate, which must exist first.
+  gate_bucket_env
+  if ! gate_ensure_bucket; then
+    echo "FAIL golden-path bucket: could not create bucket $GATE_S3_BUCKET, see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+    return
+  fi
   local img_pgid
   img_pgid="$(start_imaging)"
   STARTED_PIDS+=("$img_pgid")
