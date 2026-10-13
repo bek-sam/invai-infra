@@ -32,7 +32,20 @@ function die(msg) {
   process.exit(2);
 }
 
-const host = new URL(endpoint).hostname;
+// S-83 (T-46-2): with forcePathStyle a path on the endpoint ("http://localhost:9000/invai-local") changes
+// the bucket MinIO sees, so only a bare scheme://host[:port][/] endpoint is accepted. Checked before any request.
+let endpointUrl;
+try {
+  endpointUrl = new URL(endpoint);
+} catch {
+  die("endpoint is not a URL");
+}
+if (endpointUrl.protocol !== "http:" && endpointUrl.protocol !== "https:") die("endpoint scheme must be http or https");
+if (endpointUrl.username !== "" || endpointUrl.password !== "" || endpoint.includes("@")) die("endpoint must not carry user info");
+if (endpointUrl.pathname !== "/" && endpointUrl.pathname !== "") die("endpoint must not carry a path");
+if (endpointUrl.search !== "" || endpoint.includes("?")) die("endpoint must not carry a query");
+if (endpointUrl.hash !== "" || endpoint.includes("#")) die("endpoint must not carry a fragment");
+const host = endpointUrl.hostname;
 if (host !== "localhost" && host !== "127.0.0.1") die(`endpoint host '${host}' is not local`);
 
 const s3 = new S3Client({

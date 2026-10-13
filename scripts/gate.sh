@@ -7,6 +7,8 @@
 #   pytest) per repo.
 # - If invai-backend, invai-web or invai-floor is in scope, also resets/migrates/seeds the scratch DB
 #   invai_gate on Valkey DB 9 (T-41-4; never the dev DB `invai`; imaging up) and runs the API golden path, the browser suite and the floor suite.
+# - Checks, read only, after the seed and after the floor suite that its files are in invai-gate and none
+#   in invai-local (T-46-2); a miss fails the run.
 # - Removes its own MinIO files (every company in invai_gate) and flushes Valkey DB 9 at the end of
 #   every run and, for a run killed without its trap, at the start of the next (T-42-2).
 # - Starts api, worker and imaging without file watchers (B-388).
@@ -38,6 +40,8 @@ source "$SCRIPT_DIR/gate/ports.sh"
 source "$SCRIPT_DIR/gate/scratch.sh"
 # shellcheck source=gate/cleanup.sh
 source "$SCRIPT_DIR/gate/cleanup.sh"
+# shellcheck source=gate/bucketcheck.sh
+source "$SCRIPT_DIR/gate/bucketcheck.sh"
 # shellcheck source=gate/testdb.sh
 source "$SCRIPT_DIR/gate/testdb.sh"
 
@@ -164,6 +168,9 @@ run_golden_path() {
     return
   fi
 
+  # T-46-2: the seed's files must be in invai-gate and none in the dev bucket (read-only counts).
+  gate_bucket_landing_check "after seed" || return
+
   # Stop the imaging group (own process group), then start the whole stack once. The group is
   # stopped as a group so nothing keeps the imaging port under the new imaging.
   stop_group "$img_pgid"
@@ -218,6 +225,10 @@ run_golden_path() {
     echo "FAIL invai-floor e2e: $(failing_names "$out")"
     GATE_OVERALL_FAILED=1
   fi
+
+  # T-46-2: the suites (api, worker, imaging, E2E-created companies) wrote files too; check again
+  # before the EXIT trap's cleanup deletes them.
+  gate_bucket_landing_check "end of run"
 }
 
 if [ "$needs_golden_path" -eq 1 ]; then

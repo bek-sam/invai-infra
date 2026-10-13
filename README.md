@@ -130,14 +130,22 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   variable and imaging's pydantic-settings ranks env above `.env`. `minio-init` creates `invai-gate`
   (private, unversioned, so deleted gate files really go) and `s3tool.mjs ensure-bucket` creates it if
   missing, before the seed. `s3tool` defaults to `invai-gate`; a read-only count of the dev bucket
-  needs `S3_BUCKET=invai-local node scripts/gate/s3tool.mjs count <uuid>/`. `pnpm purge:orphans` reads
-  `invai-local`, so run it with `S3_BUCKET=invai-local` for the dry run; its `--apply` delete is now refused by `s3tool`.
+  needs `S3_BUCKET=invai-local node scripts/gate/s3tool.mjs count <uuid>/`. `s3tool` also refuses an
+  `S3_ENDPOINT` that has a path, query, fragment or user info, or a scheme other than http/https (T-46-2,
+  S-83: with path-style addressing a path changes the bucket). **The gate checks itself (T-46-2):** after the
+  seed and again after the floor suite (before the end cleanup), it counts read only the objects under every
+  `invai_gate` company id: 0 expected in `invai-local`, more than 0 in `invai-gate`; a miss fails the run
+  with one `FAIL golden-path bucket check` line. Tests: `scripts/gate/bucketcheck.test.sh`, `s3tool.test.sh`.
 
 - **No file watchers in the gate (B-388).** The gate starts `dev:all` with `INVAI_NO_WATCH=1`;
   `dev.sh` then runs the api and worker with plain `tsx` and imaging without `--reload`, so an edit
   made during a gate run cannot restart them. A plain `pnpm dev:all` still watches.
-- **One-off orphan purge (T-42-2).** `pnpm purge:orphans` is a dry run (counts and bytes per class);
-  `pnpm purge:orphans -- --apply` deletes. Only top-level UUID prefixes of `invai-local` that are
+- **One-off orphan purge (T-42-2, T-46-2).** `bash scripts/purge-orphan-files.sh --bucket <name>` is a dry
+  run (counts and bytes per class); `--bucket` is required, there is no default, and every output line names
+  the bucket it scans. `pnpm purge:orphans` is the dry run of the dev bucket (`--bucket invai-local`). `--apply`
+  deletes only in a bucket on the fixed allow-list, exactly `invai-gate`; **in `invai-local` it is refused**
+  before any request (the owner decides deletes there: OI-53, S-84). The bucket is passed to `s3tool` on
+  every call, so an exported `S3_BUCKET` can not override it. Only top-level UUID prefixes that are
   not a company id in any local database with a `companies` table and have no object changed in the
   last 6 hours are deleted; non-UUID prefixes, root objects and other buckets are only listed. It
   refuses when `invai` has no readable company list. Tests: `scripts/purge-orphan-files.test.sh`.

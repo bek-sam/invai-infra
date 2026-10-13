@@ -23,8 +23,8 @@
     "stop": "bash scripts/stop.sh",
     "reset-db": "bash scripts/reset-db.sh",
     "gate": "bash scripts/gate.sh",
-    "purge:orphans": "bash scripts/purge-orphan-files.sh",
-    "gate:test": "bash scripts/gate/order.test.sh && bash scripts/gate/ports.test.sh && bash scripts/gate/buckets.test.sh && bash scripts/gate/scratch.test.sh && bash scripts/gate/cleanup.test.sh && bash scripts/gate/testdb.test.sh && bash scripts/purge-orphan-files.test.sh",
+    "purge:orphans": "bash scripts/purge-orphan-files.sh --bucket invai-local",
+    "gate:test": "bash scripts/gate/order.test.sh && bash scripts/gate/ports.test.sh && bash scripts/gate/buckets.test.sh && bash scripts/gate/scratch.test.sh && bash scripts/gate/cleanup.test.sh && bash scripts/gate/testdb.test.sh && bash scripts/gate/bucketcheck.test.sh && bash scripts/gate/s3tool.test.sh && bash scripts/purge-orphan-files.test.sh",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
   },
