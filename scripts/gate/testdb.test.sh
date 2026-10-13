@@ -84,6 +84,7 @@ rs() {
     FOREIGN="$2"
     source "$T/stub.sh"
     run_suite invai-backend test 2>"$T/err"
+    echo "--- run_suite returned" >>"$T/stmts"
     echo "overall_failed=$GATE_OVERALL_FAILED"
   )"
   ERR="$(cat "$T/err" 2>/dev/null)"; LOGTXT="$(cat "$T/log")"; STMTS="$(cat "$T/stmts")"; CAPT="$(cat "$T/capt" 2>/dev/null)"
@@ -103,14 +104,14 @@ db="$(printf '%s' "$CAPT" | sed -n 's/^TEST_DATABASE_URL=.*\///p')"
 case "$db" in invai_test_gate_*) ok "database under test: $db" ;; *) bad "database under test ($db)" ;; esac
 has "the gate created that database" "$STMTS" "create database $db owner invai"
 has "the gate granted the app role connect" "$STMTS" "grant connect on database $db to invai_app"
-has "the gate dropped that database after a passing suite" "$STMTS" "drop database if exists $db"
+has "the gate dropped that database when the suite ended (before the EXIT trap could)" "${STMTS%%--- run_suite returned*}" "drop database if exists $db"
 has "the log names the database" "$LOGTXT" "gate backend suite: database $db"
 has "the log names the Valkey DB the harness claimed (read back from the registry)" "$LOGTXT" "Valkey DB: 7 (claimed by the test harness"
 has "no foreign session: the log says so" "$LOGTXT" "no other application connected to $db"
 eq "a clean suite leaves the gate green" "$(printf '%s' "$OUT" | grep -c 'overall_failed=0')" 1
 
 rs 1 0
-has "the gate dropped the database after a FAILING suite too" "$STMTS" "drop database if exists"
+has "the gate dropped the database after a FAILING suite too (before the EXIT trap)" "${STMTS%%--- run_suite returned*}" "drop database if exists"
 has "a failing suite is reported" "$OUT" "FAIL invai-backend test:"
 
 # ---------- detection ----------
@@ -186,11 +187,11 @@ gate_test_db_drop "$db"
 echo "after_drop=$(gate_psql_admin "select count(*) from pg_database where datname='$db'")"
 echo "db=$db"
 LIVE
-  L="$(LOG_FILE="$T/log" WORKSPACE_DIR="$T/ws" INFRA_DIR="$T/ws/invai-infra" GATE_DIR="$T/ws/invai-infra/.gate" API_PORT=3000 TMPDIR="$T" SRC="$SRC" bash "$T/live.sh" 2>&1)"
+  L="$(LOG_FILE="$T/livelog" WORKSPACE_DIR="$T/ws" INFRA_DIR="$T/ws/invai-infra" GATE_DIR="$T/ws/invai-infra/.gate" API_PORT=3000 TMPDIR="$T" SRC="$SRC" bash "$T/live.sh" 2>&1)"
   has "live: the gate created its database" "$L" "exists=1"
   has "live: another application on the gate's database is detected (report returns 1)" "$L" "report_rc=1"
-  has "live: it names the application" "$(cat "$T/log")" "other-live"
-  hasnt "live: the gate's own marker is not reported" "$(cat "$T/log")" "invai-gate-"
+  has "live: it names the application" "$(cat "$T/livelog")" "other-live"
+  hasnt "live: the gate's own marker is not reported" "$(cat "$T/livelog")" "invai-gate-"
   has "live: the database is gone after the drop" "$L" "after_drop=0"
   ldb="$(printf '%s\n' "$L" | sed -n 's/^db=//p')"
   if [ -n "$ldb" ] && [ "$(docker exec local-postgres-1 psql -U invai -d postgres -Atc "select count(*) from pg_database where datname='$ldb'" 2>/dev/null)" = 0 ]; then ok "live: independent check, $ldb does not exist"; else bad "live: $ldb still exists"; fi
