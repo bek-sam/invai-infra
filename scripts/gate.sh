@@ -38,6 +38,8 @@ source "$SCRIPT_DIR/gate/ports.sh"
 source "$SCRIPT_DIR/gate/scratch.sh"
 # shellcheck source=gate/cleanup.sh
 source "$SCRIPT_DIR/gate/cleanup.sh"
+# shellcheck source=gate/testdb.sh
+source "$SCRIPT_DIR/gate/testdb.sh"
 
 # Ports come from INVAI_*_PORT (T-36-1); validate and export before anything starts.
 resolve_ports || refuse "$PORT_ERROR"
@@ -92,6 +94,7 @@ log "gate run: repos=${GATE_REPOS[*]} golden_path=$needs_golden_path"
 # ---------- preconditions (AC3) ----------
 
 check_preconditions
+gate_test_db_drop_leftovers
 if [ "$needs_golden_path" -eq 1 ]; then
   check_golden_path_ports
 fi

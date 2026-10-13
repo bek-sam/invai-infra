@@ -96,6 +96,12 @@ cleanup() {
     [ -z "$pid" ] && continue
     stop_group "$pid"
   done
+  # T-46-1: a run killed mid-suite still stops its sampler and drops its own test database
+  # (defined in testdb.sh).
+  if declare -F gate_watch_stop >/dev/null; then gate_watch_stop; fi
+  if [ "${GATE_TEST_DB_CREATED:-0}" = 1 ] && declare -F gate_test_db_drop >/dev/null; then
+    gate_test_db_drop "$(gate_test_db_name)" || true
+  fi
   # T-42-2: with the stack stopped, remove this run's files and flush the scratch Valkey DB
   # (defined in cleanup.sh; armed by gate.sh once the golden-path phase starts).
   if [ "${GATE_CLEANUP_ARMED:-0}" = 1 ] && declare -F gate_cleanup_run >/dev/null; then
@@ -193,21 +199,22 @@ check_clean_and_capture_shas() {
 
 # ---------- preconditions (AC3) ----------
 
-# Always checked: a stray process on the test DB/Redis would corrupt any repo's `pnpm test`
-# (backend uses both), so this applies regardless of which repos are in scope.
+# Always checked. T-46-1: the backend suite no longer uses the shared names `invai_test` and Valkey
+# DB 15 (other agents' vitest runs use them legitimately, DB 15 is the harness claim registry), so
+# those two checks are gone. What the gate will use instead is checked: its own database name must
+# not exist or have a session (a stray holder of a name only this run knows), and the name must
+# be a valid gate name.
 check_preconditions() {
-  local n
-
-  n="$(docker exec local-postgres-1 psql -U invai -d invai_test -Atc \
-    "select count(*) from pg_stat_activity where datname='invai_test' and pid <> pg_backend_pid()" \
-    2>/dev/null || true)"
+  local n db
+  db="$(gate_test_db_name)"
+  gate_test_db_valid "$db" || refuse "gate test database name '$db' is not a valid gate name"
+  n="$(gate_psql_admin "select count(*) from pg_stat_activity where datname='$db'" 2>/dev/null || true)"
   if [ -n "$n" ] && [ "$n" != "0" ]; then
-    refuse "invai_test has $n open connection(s) from a process this gate did not start; stop it first"
+    refuse "$db has $n open connection(s) from a process this gate did not start; stop it first"
   fi
-
-  n="$(docker exec local-valkey-1 redis-cli client list 2>/dev/null | grep -c 'db=15' || true)"
-  if [ -n "$n" ] && [ "$n" != "0" ]; then
-    refuse "test Redis (DB 15) has $n open connection(s) from a process this gate did not start; stop it first"
+  n="$(gate_psql_admin "select 1 from pg_database where datname='$db'" 2>/dev/null || true)"
+  if [ "$n" = 1 ]; then
+    refuse "$db already exists; this run's test database name must be new"
   fi
 }
 
@@ -246,11 +253,20 @@ run_suite() {
   kind="$(repo_kind "$repo")"
   cmd="$(check_command "$kind" "$suite")"
   section "$repo $suite: $cmd"
-  local extra_env=()
+  local extra_env=() env_cmd=(env) tdb="" tapp="" watch_rc=0 hint=""
   if [ "$repo" = invai-backend ] && [ "$suite" = test ]; then
-    extra_env=(TEST_DATABASE_URL="postgres://invai_app:invai@localhost:5432/invai_test"
-               TEST_MIGRATION_DATABASE_URL="postgres://invai:invai@localhost:5432/invai_test"
-               TEST_REDIS_URL="redis://localhost:6379/15")
+    # T-46-1: a database and (via the harness claim) a Valkey DB no other process names.
+    tdb="$(gate_test_db_name)"; tapp="$(gate_app_name)"
+    log "gate backend suite: database $tdb (created by this run, pinned, dropped at the end), PGAPPNAME $tapp, Valkey DB claimed by the harness (REDIS_URL reset to the DB 0 base URL, no TEST_REDIS_URL)"
+    if ! gate_test_db_create "$tdb"; then
+      echo "FAIL $repo $suite: could not create the gate test database $tdb, see $LOG_FILE"
+      GATE_OVERALL_FAILED=1
+      gate_test_db_drop "$tdb" || true
+      return
+    fi
+    while IFS= read -r line; do extra_env+=("$line"); done < <(gate_backend_test_env "$tdb")
+    env_cmd=(env -u TEST_REDIS_URL)
+    gate_watch_start "$tdb" "$tapp" "$$"
   fi
   if [ "$repo" = invai-web ] || [ "$repo" = invai-floor ]; then
     if [ "$suite" = build ]; then
@@ -258,21 +274,27 @@ run_suite() {
     fi
   fi
   if [ "${#extra_env[@]}" -gt 0 ]; then
-    out="$(cd "$WORKSPACE_DIR/$repo" && env "${extra_env[@]}" bash -c "$cmd" 2>&1)"
+    out="$(cd "$WORKSPACE_DIR/$repo" && "${env_cmd[@]}" "${extra_env[@]}" bash -c "$cmd" 2>&1)"
   else
     out="$(cd "$WORKSPACE_DIR/$repo" && bash -c "$cmd" 2>&1)"
   fi
   rc=$?
   log "$out"
+  if [ -n "$tdb" ]; then
+    gate_watch_stop
+    gate_watch_report "$tdb" || { watch_rc=1; hint=" [another application connected to $tdb during the suite, see $LOG_FILE]"; }
+    gate_test_db_drop "$tdb" || true
+  fi
   if [ $rc -eq 0 ]; then
     n="$(count_passed "$out")"
     echo "PASS $repo $suite $n passed"
   else
     names="$(failing_names "$out")"
     [ -z "$names" ] && names="see $LOG_FILE"
-    echo "FAIL $repo $suite: $names"
+    echo "FAIL $repo $suite: $names$hint"
     GATE_OVERALL_FAILED=1
   fi
+  [ "$watch_rc" -eq 0 ] || [ $rc -ne 0 ] || echo "WARN $repo $suite passed, but another application was connected to $tdb during it, see $LOG_FILE" >&2
 }
 
 # run_contracts_check: after invai-contracts' own suites, typecheck backend/web/floor/ui against
@@ -383,7 +405,7 @@ reset_rate_buckets() {
     '' | *[!0-9]*) echo "refused: DB '$db' is not a number"; return 1 ;;
   esac
   if [ "$db" -eq 15 ]; then
-    echo "refused: DB 15 is the gate's test DB"
+    echo "refused: DB 15 is the test harness's claim registry"
     return 1
   fi
   if [ "$db" -eq 0 ]; then

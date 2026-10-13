@@ -41,16 +41,26 @@ instead). If `invai-backend`, `invai-web` or `invai-floor` is in scope, it also 
 and seeds the dev database (imaging must be reachable) and runs the API golden path, the browser
 suite and the floor suite — see `run-golden-path` for what that covers.
 
-- Sets its own `TEST_DATABASE_URL`/`TEST_MIGRATION_DATABASE_URL` (`invai_test`) and
-  `TEST_REDIS_URL` (Valkey DB 15) for the backend test run, rather than relying on a shell's
-  exported env.
+- Runs the backend test suite on names no other process uses (T-46-1, B-426): a database the gate
+  creates itself, `invai_test_gate_<UTC stamp>_<pid>` (pinned with `TEST_DATABASE_URL` and
+  `TEST_MIGRATION_DATABASE_URL`, dropped when the suite ends and again by the EXIT trap, and any idle
+  leftover older than 10 minutes is dropped at the next start), and a Valkey DB claimed by the test
+  harness (`REDIS_URL` reset to `redis://localhost:6379`, no `TEST_REDIS_URL`; the log names the claimed
+  DB). The shared `invai_test` and Valkey DB 15 (the harness's claim registry) are not used by the
+  gate. Why: wave 45 run 1 failed 13 tests when rows vanished from the shared pinned database mid-suite
+  (see `invai-docs/waves/46/reports/T-46-1.md`).
+- Detection: every connection of the backend suite carries `PGAPPNAME=invai-gate-<run id>`; while the
+  suite runs the gate samples `pg_stat_activity` on its database each second and, if any other
+  application connected, writes `GATE DETECTION` lines (application, client, state) to the log, adds a
+  hint to the `FAIL` line, or warns on stderr when the suite passed. It only reports; it never kills
+  anything. Tests: `scripts/gate/testdb.test.sh`.
 - stdout is exactly one line per suite — `PASS <repo> <suite> <n> passed` or
   `FAIL <repo> <suite>: <failing test names>` — plus a final `log: <path>` line pointing at the
   full output (`invai-infra/.gate/run-<timestamp>.log`, gitignored). Everything else goes to
   that log or, for a refusal, to stderr.
-- Refuses to start (exit 1, one-line reason on stderr) if another process already holds the test
-  Postgres DB (`invai_test`) or the test Redis DB (Valkey DB 15) — checked for every run, since
-  `invai-backend`'s `test` suite uses both. When the golden-path phase will run (backend/web/floor
+- Refuses to start (exit 1, one-line reason on stderr) if its own test database name already exists or
+  has a session (the old `invai_test` / Valkey DB 15 checks were dropped: other agents' test runs use
+  those legitimately). When the golden-path phase will run (backend/web/floor
   in scope), it also refuses if the configured ports (default 3000/8000/5173/5174, see below) are
   already held by something this run didn't start, naming the port, the pid and the variable to set
   (e.g. `port 8000 is held by pid 26738 (not started by this gate); stop it or set INVAI_IMAGING_PORT
