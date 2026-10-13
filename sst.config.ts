@@ -328,16 +328,16 @@ export default $config({
     };
 
     // S-87 (T-49-2): no service links the bucket (`link` grants s3:*). Each gets the explicit
-    // allow list plus the Deny of old-version, versioning, lifecycle and policy actions from
-    // infra/files-access.ts; scripts/files-iam.test.sh checks all four services use it.
+    // allow list for what it calls (migrate none) plus the Deny from infra/files-access.ts (S-89);
+    // scripts/files-iam.test.sh evaluates each service's list and anchors each permissions line.
     const {
-      filesStatements,
+      filesPermissionsFor,
       appLogGroupName,
       metricNamespace,
       UNHANDLED_REJECTION_ALARM,
       UNHANDLED_REJECTION_FILTER_PATTERN,
     } = await import("./infra/files-access");
-    const filesAccess = filesStatements(files.arn, $interpolate`${files.arn}/*`);
+    const filesObjects = $interpolate`${files.arn}/*`;
 
     // Imaging: internal only, no load balancer. Reached through Cloud Map service discovery
     // (`imaging.service`); `imaging.url` throws for a service with no public port (B-57).
@@ -348,7 +348,7 @@ export default $config({
       cpu: "2 vCPU",
       memory: "8 GB",
       storage: "40 GB",
-      permissions: filesAccess,
+      permissions: filesPermissionsFor("imaging", files.arn, filesObjects),
       environment: {
         IMAGING_ENV: "production",
         IMAGING_DEV_ENDPOINTS: "false",
@@ -414,7 +414,7 @@ export default $config({
       command: ["node", "--import", "./dist/lib/telemetry.js", "dist/api/server.js"],
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      permissions: [...filesAccess, kmsPermission],
+      permissions: [...filesPermissionsFor("api", files.arn, filesObjects), kmsPermission],
       logging: { name: appLogGroupName(stage, "api") },
       environment: {
         ...backendEnvironment,
@@ -465,7 +465,7 @@ export default $config({
       command: ["node", "--import", "./dist/lib/telemetry.js", "dist/worker/index.js"],
       cpu: "1 vCPU",
       memory: "2 GB",
-      permissions: [...filesAccess, kmsPermission],
+      permissions: [...filesPermissionsFor("worker", files.arn, filesObjects), kmsPermission],
       logging: { name: appLogGroupName(stage, "worker") },
       environment: {
         ...backendEnvironment,
@@ -491,7 +491,7 @@ export default $config({
       ],
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      permissions: [...filesAccess, kmsPermission],
+      permissions: [...filesPermissionsFor("migrate", files.arn, filesObjects), kmsPermission],
       environment: backendEnvironment,
       ssm: backendSsm,
       dev: false,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static checks (T-49-2 part A, AC1-AC3 and AC5) that the app's services cannot read, list or delete
+# Static checks (T-49-2 part A, AC1-AC3 and AC5; T-50-2 per-service lists and anchors) that the app's services cannot read, list or delete
 # old object versions or change the Files bucket's versioning, lifecycle or policy, and that the
 # crash alarm watches the right log lines. Reads files only; never calls AWS, MinIO or sst.
 # Run: `pnpm files-iam:test`. INFRA_DIR / BACKEND_DIR override the trees under test (mutant runs).
@@ -22,11 +22,11 @@ cat > "$DUMP.mjs" <<'JS'
 const m = await import(process.argv[2]);
 const B = "BUCKET", O = "OBJECTS";
 console.log(JSON.stringify({
-  allowObject: m.FILES_ALLOW_OBJECT_ACTIONS,
+  byService: m.FILES_ALLOW_OBJECT_ACTIONS_BY_SERVICE,
   allowBucket: m.FILES_ALLOW_BUCKET_ACTIONS,
   deny: m.FILES_DENY_ACTIONS,
-  statements: m.filesStatements(B, O),
-  doc: m.filesPolicyDocument("w49-iam-x"),
+  statements: Object.fromEntries(["api", "worker", "imaging", "migrate"].map((s) => [s, m.filesPermissionsFor(s, B, O)])),
+  doc: m.filesPolicyDocument("w50-t-50-2-x", "imaging"),
   msg: m.UNHANDLED_REJECTION_MSG,
   pattern: m.UNHANDLED_REJECTION_FILTER_PATTERN,
   alarm: m.UNHANDLED_REJECTION_ALARM,
@@ -40,31 +40,34 @@ node --experimental-strip-types --no-warnings "$DUMP.mjs" "$MOD" > "$DUMP" 2>"$D
 rm -f "$DUMP.err"
 export DUMP
 
-# AC1: every S3 call the code makes (backend lib/s3.ts + callers, zip-readme multipart, privacy export,
-# imaging storage.py) maps to one of these actions. The allow side must cover all of them.
+# (a) evaluate filesPermissionsFor for every service. Calls (T-50-2 inventory): api and worker use
+# lib/s3.ts get/put/delete/multipart/list/head; imaging storage.py head bucket, get, put, multipart abort
+# and never delete; migrate (run-migrate.ts / bootstrap, migrate, reference-seed CLIs) makes no S3 call.
 python3 - <<'PY'
 import json, os
 d = json.load(open(os.environ["DUMP"]))
-need_obj = {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"}
-need_bucket = {"s3:ListBucket"}
 st = d["statements"]
-obj = next(s for s in st if s["effect"] == "allow" and s["resources"] == ["OBJECTS"])
-bkt = next(s for s in st if s["effect"] == "allow" and s["resources"] == ["BUCKET"])
-assert need_obj <= set(obj["actions"]), "object allow misses " + str(need_obj - set(obj["actions"]))
-assert need_bucket <= set(bkt["actions"]), "bucket allow misses " + str(need_bucket - set(bkt["actions"]))
+want = {
+  "api": {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"},
+  "worker": {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"},
+  "imaging": {"s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"},
+  "migrate": set(),
+}
+assert set(st) == set(want), list(st)
+assert d["allowBucket"] == ["s3:ListBucket"], d["allowBucket"]
+for svc, objs in want.items():
+    allows = [s for s in st[svc] if s["effect"] == "allow"]
+    if not objs:
+        assert allows == [], svc + " must have no allow statement: %r" % allows
+    else:
+        assert len(allows) == 2, svc + " allow statements"
+        assert allows[0]["resources"] == ["OBJECTS"] and set(allows[0]["actions"]) == objs and len(allows[0]["actions"]) == len(objs), "%s object allow %r" % (svc, allows[0])
+        assert allows[1]["resources"] == ["BUCKET"] and allows[1]["actions"] == ["s3:ListBucket"], svc + " bucket allow"
+    assert not any("*" in a for s in allows for a in s["actions"]), svc + " wildcard in allow"
+    assert "s3:CreateBucket" not in [a for s in allows for a in s["actions"]]
+assert "s3:DeleteObject" not in {a for s in st["imaging"] for a in s["actions"] if s["effect"] == "allow"}, "imaging may delete"
 PY
-check "AC1 allow side covers every action the app needs (object actions on arn/*, ListBucket on arn)" $?
-
-python3 - <<'PY'
-import json, os
-d = json.load(open(os.environ["DUMP"]))
-allowed = set(d["allowObject"]) | set(d["allowBucket"])
-assert set(d["allowObject"]) == {"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"}, d["allowObject"]
-assert set(d["allowBucket"]) == {"s3:ListBucket"}, d["allowBucket"]
-assert not any("*" in a for a in allowed), "wildcard in allow"
-assert "s3:CreateBucket" not in allowed
-PY
-check "AC1 allow list is exactly the five actions, no wildcard, no CreateBucket" $?
+check "AC1/AC2 per-service allow sets: api/worker Get,Put,Delete,Abort + ListBucket; imaging Get,Put,Abort + ListBucket (no Delete); migrate none" $?
 
 python3 - <<'PY'
 import json, os
@@ -73,31 +76,38 @@ want = """GetObjectVersion GetObjectVersionAttributes GetObjectVersionAcl GetObj
 GetObjectVersionTorrent ListBucketVersions DeleteObjectVersion DeleteObjectVersionTagging PutObjectVersionAcl
 PutObjectVersionTagging PutBucketVersioning PutLifecycleConfiguration PutBucketPolicy DeleteBucketPolicy
 DeleteBucket PutBucketAcl PutObjectAcl PutBucketPublicAccessBlock PutBucketOwnershipControls
-PutReplicationConfiguration BypassGovernanceRetention""".split()
+PutReplicationConfiguration BypassGovernanceRetention
+PutInventoryConfiguration PutEncryptionConfiguration PutBucketNotification PutBucketCORS PutObjectRetention PutObjectLegalHold""".split()
 want = {"s3:" + w for w in want}
 got = d["deny"]
+assert len(want) == 27
 assert len(got) == len(set(got)), "duplicate deny action"
 missing = want - set(got)
 assert not missing, "deny list drops " + ", ".join(sorted(missing))
 assert set(got) == want, "extra deny actions " + str(set(got) - want)
 assert not any("*" in a for a in got), "wildcard in deny"
-assert not (set(got) & (set(d["allowObject"]) | set(d["allowBucket"]))), "an action is both allowed and denied"
+for svc, sts in d["statements"].items():
+    allowed = {a for s in sts if s["effect"] == "allow" for a in s["actions"]}
+    assert not (set(got) & allowed), svc + ": an action is both allowed and denied"
 PY
-check "AC2 Deny list is exactly the 21 named actions (R3), none also allowed, no wildcard" $?
+check "AC3 Deny list is exactly the 27 named actions (R3 + S-89 six), none also allowed, no wildcard" $?
 
 python3 - <<'PY'
 import json, os
 d = json.load(open(os.environ["DUMP"]))
-deny = [s for s in d["statements"] if s["effect"] == "deny"]
-assert len(deny) == 1, "one deny statement"
-assert deny[0]["resources"] == ["BUCKET", "OBJECTS"], "deny must cover the bucket and arn/*: %r" % deny[0]["resources"]
-allow = [s for s in d["statements"] if s["effect"] == "allow"]
-assert [s["resources"] for s in allow] == [["OBJECTS"], ["BUCKET"]], "allow resources"
+for svc, sts in d["statements"].items():
+    deny = [s for s in sts if s["effect"] == "deny"]
+    assert len(deny) == 1, svc + ": one deny statement"
+    assert sts[-1] is not None and sts[-1]["effect"] == "deny", svc + ": Deny must be last"
+    assert deny[0]["resources"] == ["BUCKET", "OBJECTS"], "%s deny must cover the bucket and arn/*: %r" % (svc, deny[0]["resources"])
+    assert set(deny[0]["actions"]) == set(d["deny"]) and len(deny[0]["actions"]) == len(d["deny"]), svc + ": deny holds every FILES_DENY_ACTIONS entry"
 doc = d["doc"]
-assert any(s["Effect"] == "Deny" and s["Resource"] == ["arn:aws:s3:::w49-iam-x", "arn:aws:s3:::w49-iam-x/*"] for s in doc["Statement"])
+assert doc["Statement"][-1]["Effect"] == "Deny" and doc["Statement"][-1]["Resource"] == ["arn:aws:s3:::w50-t-50-2-x", "arn:aws:s3:::w50-t-50-2-x/*"]
+assert not any("s3:DeleteObject" in s["Action"] for s in doc["Statement"] if s["Effect"] == "Allow"), "imaging doc allows delete"
 PY
-check "AC3 Deny resource is both the bucket and arn/*; allows are object-level on arn/* and ListBucket on arn" $?
+check "AC3 every service: one Deny, last, on both the bucket and arn/*, holding every denied action" $?
 
+# (b) anchor each service's permissions line to one exact form
 python3 - "$SST" <<'PY'
 import re, sys
 raw = open(sys.argv[1]).read()
@@ -106,18 +116,25 @@ def block(name):
     m = re.search(r'new sst\.aws\.(?:Service|Task)\("%s",.*?\n    \}\);' % name, code, re.S)
     assert m, name + " block missing"
     return m.group(0)
-assert "const filesAccess = filesStatements(files.arn, $interpolate`${files.arn}/*`);" in code, "filesAccess definition changed"
-for svc in ("Imaging", "Api", "Worker", "Migrate"):
+assert code.count("const filesObjects = $interpolate`${files.arn}/*`;") == 1, "filesObjects definition changed"
+assert "filesAccess" not in code, "the shared filesAccess constant is back"
+exact = {
+  "Imaging": r'filesPermissionsFor\("imaging", files\.arn, filesObjects\)',
+  "Api": r'\[\.\.\.filesPermissionsFor\("api", files\.arn, filesObjects\), kmsPermission\]',
+  "Worker": r'\[\.\.\.filesPermissionsFor\("worker", files\.arn, filesObjects\), kmsPermission\]',
+  "Migrate": r'\[\.\.\.filesPermissionsFor\("migrate", files\.arn, filesObjects\), kmsPermission\]',
+}
+for svc, pat in exact.items():
     b = block(svc)
-    m = re.search(r'^      permissions: (.*),$', b, re.M)
-    assert m, svc + " has no permissions line"
-    assert re.search(r'(^|[\[\s,.])filesAccess\b', m.group(1)), svc + " permissions lack filesAccess: " + m.group(1)
-    assert "...filesAccess" in m.group(1) or m.group(1).strip() == "filesAccess", svc + " must spread filesAccess"
+    lines = re.findall(r'^      permissions: .*$', b, re.M)
+    assert len(lines) == 1, svc + ": exactly one permissions line, got %d" % len(lines)
+    assert re.fullmatch(r'      permissions: ' + pat + ',', lines[0]), svc + " permissions line is not the anchored form: " + lines[0]
     assert not re.search(r'^\s*link:', b, re.M), svc + " still has a link: (link grants s3:*)"
+assert code.count("filesPermissionsFor(") == 4, "filesPermissionsFor used %d times" % code.count("filesPermissionsFor(")
 assert not re.search(r'link:\s*\[[^\]]*files', code), "link: [files] is back somewhere"
 assert "S3_BUCKET: files.name" in code, "S3_BUCKET no longer carries the bucket name"
 PY
-check "AC2 Imaging, Api, Worker and Migrate each spread filesAccess; none keeps link; S3_BUCKET still set" $?
+check "AC4(b) each service's permissions line matches one anchored form (no filter/map/slice), no link, S3_BUCKET still set" $?
 
 # AC5 crash alarm
 python3 - "$SST" <<'PY'

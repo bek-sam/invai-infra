@@ -1,5 +1,5 @@
 /**
- * What the app's own services may do with the `Files` bucket (T-49-2, S-87, architect ruling R3),
+ * What the app's own services may do with the `Files` bucket (T-49-2, S-87, architect ruling R3; narrowed per service in T-50-2, S-89),
  * and the crash alarm that watches them (B-306).
  *
  * The bucket keeps old versions for 7 days so an accidental delete is recoverable. SST's
@@ -13,18 +13,24 @@
  * scripts/files-iam-minio.test.sh (generated MinIO policy).
  */
 
-/** Allowed on `<bucket arn>/*`: current-object reads, writes, deletes and multipart. */
-export const FILES_ALLOW_OBJECT_ACTIONS = [
-  "s3:GetObject",
-  "s3:PutObject",
-  "s3:DeleteObject",
-  "s3:AbortMultipartUpload",
-] as const;
+export type FilesService = "api" | "worker" | "imaging" | "migrate";
 
 /**
- * Allowed on `<bucket arn>`: ListObjectsV2 and HeadBucket. Without it a HEAD of a missing key
- * answers 403 instead of 404 and imaging `exists()` breaks. No CreateBucket: production never
- * creates the bucket (S3_CREATE_BUCKET=false).
+ * Allowed on `<bucket arn>/*`, per service (T-50-2, S-89): only what each service calls.
+ * api and worker also delete (purge, sweep); imaging reads inputs and writes renders and aborts
+ * multipart uploads but never deletes; migrate makes no S3 call, so it gets no allow at all.
+ */
+export const FILES_ALLOW_OBJECT_ACTIONS_BY_SERVICE: Record<FilesService, readonly string[]> = {
+  api: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+  worker: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+  imaging: ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
+  migrate: [],
+};
+
+/**
+ * Allowed on `<bucket arn>` to every service that has an object allow: ListObjectsV2 and
+ * HeadBucket. Without it a HEAD of a missing key answers 403 instead of 404 and imaging
+ * `exists()` breaks. No CreateBucket: production never creates the bucket (S3_CREATE_BUCKET=false).
  */
 export const FILES_ALLOW_BUCKET_ACTIONS = ["s3:ListBucket"] as const;
 
@@ -51,6 +57,12 @@ export const FILES_DENY_ACTIONS = [
   "s3:PutBucketOwnershipControls",
   "s3:PutReplicationConfiguration",
   "s3:BypassGovernanceRetention",
+  "s3:PutInventoryConfiguration",
+  "s3:PutEncryptionConfiguration",
+  "s3:PutBucketNotification",
+  "s3:PutBucketCORS",
+  "s3:PutObjectRetention",
+  "s3:PutObjectLegalHold",
 ] as const;
 
 export interface FilesStatement<R> {
@@ -60,24 +72,28 @@ export interface FilesStatement<R> {
 }
 
 /**
- * The four statements for a service role. `bucketArn` is the bucket, `objectsArn` is
- * `<bucket arn>/*`. The Deny covers both, so bucket-level actions (versioning, lifecycle,
- * policy) are refused as well as object-level ones.
+ * The statements for one service role. `bucketArn` is the bucket, `objectsArn` is `<bucket arn>/*`.
+ * Allows appear only when the service has object actions; the Deny is always present and always
+ * last, on both resources, so bucket-level actions (versioning, lifecycle, policy) are refused as
+ * well as object-level ones.
  */
-export function filesStatements<R>(bucketArn: R, objectsArn: R): FilesStatement<R>[] {
-  return [
-    { effect: "allow", actions: [...FILES_ALLOW_OBJECT_ACTIONS], resources: [objectsArn] },
-    { effect: "allow", actions: [...FILES_ALLOW_BUCKET_ACTIONS], resources: [bucketArn] },
-    { effect: "deny", actions: [...FILES_DENY_ACTIONS], resources: [bucketArn, objectsArn] },
-  ];
+export function filesPermissionsFor<R>(service: FilesService, bucketArn: R, objectsArn: R): FilesStatement<R>[] {
+  const objectActions = FILES_ALLOW_OBJECT_ACTIONS_BY_SERVICE[service];
+  const out: FilesStatement<R>[] = [];
+  if (objectActions.length > 0) {
+    out.push({ effect: "allow", actions: [...objectActions], resources: [objectsArn] });
+    out.push({ effect: "allow", actions: [...FILES_ALLOW_BUCKET_ACTIONS], resources: [bucketArn] });
+  }
+  out.push({ effect: "deny", actions: [...FILES_DENY_ACTIONS], resources: [bucketArn, objectsArn] });
+  return out;
 }
 
 /** The same statements as an AWS-style policy document for a bucket name (local MinIO proof). */
-export function filesPolicyDocument(bucket: string) {
+export function filesPolicyDocument(bucket: string, service: FilesService) {
   const bucketArn = `arn:aws:s3:::${bucket}`;
   return {
     Version: "2012-10-17",
-    Statement: filesStatements(bucketArn, `${bucketArn}/*`).map((s, i) => ({
+    Statement: filesPermissionsFor(service, bucketArn, `${bucketArn}/*`).map((s, i) => ({
       Sid: `Files${i}`,
       Effect: s.effect === "allow" ? "Allow" : "Deny",
       Action: s.actions,

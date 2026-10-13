@@ -283,12 +283,16 @@ the guard hook blocks deploys, secret changes and AWS CLI calls for agents.
     week. Incomplete multipart uploads are aborted after 1 day.
   - CORS allows GET, HEAD and PUT only from the stage's web and floor origins.
   - The api, worker, imaging and migrate roles do not `link` the bucket (`link` grants `s3:*`).
-    Each gets explicit object actions (Get, Put, Delete, AbortMultipartUpload on `<bucket>/*`,
-    ListBucket on the bucket) plus a Deny of old-version reads, version listing and deletes,
-    and of versioning, lifecycle, policy, ACL and bucket-delete changes (S-87, B-432). The lists
-    live in `infra/files-access.ts`; `S3_BUCKET` carries the name. Prove it with
-    `bash scripts/files-iam.test.sh` (static) and `bash scripts/files-iam-minio.test.sh`
-    (throwaway `w49-iam-*` bucket on local MinIO; it prints what MinIO cannot express). This
+    Each gets only the object actions it calls on `<bucket>/*` and ListBucket on the bucket:
+    api and worker Get, Put, Delete, AbortMultipartUpload; imaging Get, Put, AbortMultipartUpload
+    (no Delete); migrate no allow at all (it makes no S3 call). All four share an explicit Deny
+    of old-version reads, version listing and deletes, and of versioning, lifecycle, policy,
+    ACL, public access, ownership, replication, inventory, encryption, notification, CORS,
+    retention, legal hold and bucket-delete changes (S-87, S-89, B-432, B-444). The lists live in
+    `infra/files-access.ts` (`filesPermissionsFor`); `S3_BUCKET` carries the name. Prove it with
+    `bash scripts/files-iam.test.sh` (static, evaluates each service and anchors each
+    `permissions:` line) and `bash scripts/files-iam-minio.test.sh` (throwaway `w50-t-50-2-*`
+    bucket on local MinIO with the imaging policy; it prints what MinIO cannot express). This
     holds only once deployed; cloud administrators can still read old versions until they
     expire.
   - A metric filter on the api and worker log groups counts `unhandled rejection` log lines
