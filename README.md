@@ -282,6 +282,19 @@ the guard hook blocks deploys, secret changes and AWS CLI calls for agents.
   - Old versions expire after 7 days, so the app's PII purge really removes files within a
     week. Incomplete multipart uploads are aborted after 1 day.
   - CORS allows GET, HEAD and PUT only from the stage's web and floor origins.
+  - The api, worker, imaging and migrate roles do not `link` the bucket (`link` grants `s3:*`).
+    Each gets explicit object actions (Get, Put, Delete, AbortMultipartUpload on `<bucket>/*`,
+    ListBucket on the bucket) plus a Deny of old-version reads, version listing and deletes,
+    and of versioning, lifecycle, policy, ACL and bucket-delete changes (S-87, B-432). The lists
+    live in `infra/files-access.ts`; `S3_BUCKET` carries the name. Prove it with
+    `bash scripts/files-iam.test.sh` (static) and `bash scripts/files-iam-minio.test.sh`
+    (throwaway `w49-iam-*` bucket on local MinIO; it prints what MinIO cannot express). This
+    holds only once deployed; cloud administrators can still read old versions until they
+    expire.
+  - A metric filter on the api and worker log groups counts `unhandled rejection` log lines
+    into `InvAI/<stage>` `UnhandledRejection`; one alarm per stage fires on 1 or more in
+    5 minutes and notifies the `OpsAlerts` SNS topic, which has no subscription until the
+    owner sets an address (OI-37, OI-41).
   - Per-kind retention is the app's purge job. Keys start with `{companyId}/`, so prefix
     lifecycle rules can't select a kind.
 - **KMS key** `alias/invai-<stage>-field-encryption`, for the backend's KMS field-encryption
