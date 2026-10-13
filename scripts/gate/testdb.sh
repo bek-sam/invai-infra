@@ -65,16 +65,21 @@ gate_test_db_drop() {
 }
 
 # gate_test_db_drop_leftovers: at gate start, drop gate test databases a killed run left behind.
-# Only names that pass gate_test_db_valid, with no session at all, older than GATE_TEST_DB_STALE_MIN
-# minutes by the stamp in the name (a live concurrent gate is never younger-than-that and idle).
+# Only names that pass gate_test_db_valid are considered, and a database is dropped only when ALL hold:
+# its owning gate pid (the last segment of the name) is dead (`kill -0` fails), it has no session at
+# all, and its stamp is older than GATE_TEST_DB_STALE_MIN minutes. The stamp is the gate's START time,
+# so age alone proves nothing about a long run: a live pid always keeps its database, and sessions of
+# a live run are never terminated here.
 gate_test_db_drop_leftovers() {
-  local stale_min="${GATE_TEST_DB_STALE_MIN:-10}" now cutoff name stamp rows n
+  local stale_min="${GATE_TEST_DB_STALE_MIN:-10}" now cutoff name stamp rows n pid
   rows="$(gate_psql_admin "select d.datname, (select count(*) from pg_stat_activity a where a.datname=d.datname) from pg_database d where d.datname ~ '^invai_test_gate_[0-9]{14}_[0-9]+\$'" 2>>"$LOG_FILE")" || return 0
   now="$(date -u +%s)"
   cutoff=$((now - stale_min * 60))
   while IFS='|' read -r name n; do
     [ -n "$name" ] || continue
     gate_test_db_valid "$name" || continue
+    pid="${name##*_}"
+    if kill -0 "$pid" 2>/dev/null; then log "left $name alone: its gate (pid $pid) is still running"; continue; fi
     [ "${n:-1}" = 0 ] || { log "left $name alone: it has $n open session(s)"; continue; }
     stamp="${name#$GATE_TEST_DB_PREFIX}"; stamp="${stamp%%_*}"
     if [ "$(gate_stamp_epoch "$stamp")" -lt "$cutoff" ] 2>/dev/null; then

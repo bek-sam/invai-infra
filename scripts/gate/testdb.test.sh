@@ -152,14 +152,19 @@ hasnt "preconditions no longer count Valkey DB 15 clients" "$(cat "$T/stmts")" "
 
 # ---------- leftovers at start ----------
 now_stamp="$(date -u +%Y%m%d%H%M%S)"
+DEAD="$(sh -c 'echo $$')"; sleep 0.2   # a pid that has just exited
+kill -0 "$DEAD" 2>/dev/null && DEAD=999999
+LIVE=$$
 : >"$T/stmts"
 in_env "gate_psql_admin() { echo \"\$1\" >>'$T/stmts'; case \"\$1\" in *'from pg_database d'*)
-  printf '%s\n' 'invai_test_gate_20200101000000_11|0' 'invai_test_gate_20200101000000_12|2' 'invai_test_gate_${now_stamp}_13|0' 'invai_test_tpl|0' 'invai_test_123|0' 'invai|0' ;; esac; return 0; }
+  printf '%s\n' 'invai_test_gate_20200101000000_${DEAD}|0' 'invai_test_gate_20200101000000_${LIVE}|0' 'invai_test_gate_20200101000001_${DEAD}|2' 'invai_test_gate_${now_stamp}_${DEAD}|0' 'invai_test_tpl|0' 'invai_test_123|0' 'invai|0' ;; esac; return 0; }
   gate_test_db_drop_leftovers" >/dev/null 2>&1
 S="$(cat "$T/stmts")"
-has "a leftover old idle gate database is dropped" "$S" "drop database if exists invai_test_gate_20200101000000_11"
-hasnt "a leftover with open sessions is left alone" "$S" "drop database if exists invai_test_gate_20200101000000_12"
-hasnt "a young gate database (maybe a live concurrent gate) is left alone" "$S" "_${now_stamp}_13"
+has "old stamp + dead pid + idle -> dropped" "$S" "drop database if exists invai_test_gate_20200101000000_${DEAD}"
+hasnt "old stamp + LIVE pid -> kept" "$S" "invai_test_gate_20200101000000_${LIVE}"
+hasnt "a live gate's sessions are never terminated" "$S" "pg_terminate_backend(pid) from pg_stat_activity where datname='invai_test_gate_20200101000000_${LIVE}'"
+hasnt "dead pid but open sessions -> left alone" "$S" "invai_test_gate_20200101000001_${DEAD}"
+hasnt "a young gate database is left alone" "$S" "_${now_stamp}_"
 hasnt "invai_test_tpl is never dropped" "$S" "drop database if exists invai_test_tpl"
 hasnt "invai_test_<pid> is never dropped" "$S" "drop database if exists invai_test_123"
 eq "the dev database is never dropped" "$(printf '%s\n' "$S" | grep -cx 'drop database if exists invai')" 0
