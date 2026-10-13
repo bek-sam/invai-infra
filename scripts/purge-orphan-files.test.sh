@@ -6,6 +6,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${PURGE_SRC:-$HERE/purge-orphan-files.sh}"
 fail=0
+# Hermetic (T-42-2 round 2, incident 2026-10-13): every path that could reach a delete points at a
+# dead endpoint and containers that do not exist, so a removed fence fails a test instead of
+# deleting. The run aborts unless the endpoint is proven dead first.
+export S3_ENDPOINT=http://127.0.0.1:1 S3_BUCKET=invai-local
+export GATE_PG_CONTAINER=no-such-pg-container GATE_VALKEY_CONTAINER=no-such-valkey-container PURGE_PG_CONTAINER=no-such-pg-container
+export DATABASE_URL=postgres://nobody:nobody@127.0.0.1:1/no_such_db MIGRATION_DATABASE_URL=postgres://nobody:nobody@127.0.0.1:1/no_such_db REDIS_URL=redis://127.0.0.1:1/9
+unset GATE_S3_TOOL PURGE_S3_TOOL
+if ! { out="$(node "$HERE/gate/s3tool.mjs" buckets 2>&1)"; [ $? -ne 0 ] && printf '%s' "$out" | grep -qi 'ECONNREFUSED\|connect'; }; then
+  echo "ABORT - the test endpoint is not dead; refusing to run (a mutant could delete real files)"; exit 3
+fi
 ok() { echo "ok   - $1"; }
 bad() { echo "FAIL - $1"; fail=1; }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
@@ -48,6 +58,7 @@ run() {
   OUT="$( ( source "$SRC"; source "$T/stubs.sh"; PURGE_NOW=$NOW; purge_main "$@"; echo "rc=$?" ) 2>&1 )"
   RC="${OUT##*rc=}"; CALLS="$(cat "$T/calls")"
 }
+ok "test endpoint is dead (connection refused)"
 INVAI_IDS="$LV"; TEST_IDS="$LT"; GATE_IDS="$LG"; FAIL_DB=""
 
 run
@@ -73,6 +84,25 @@ FAIL_DB=""
 # a prefix that is live only in invai_test or invai_gate stays (checked above: LT, LG not deleted)
 INVAI_IDS="$LV $O1"; run --apply
 eq "an id live in invai is never deleted" "$CALLS" "delete-prefix $O2/"
+
+# F2: live-file failures are refusals, never "not live"
+run_with() { # run_with <collect function body> -> overrides purge_collect_live
+  : >"$T/calls"
+  export T NOW OLD NEW O1 O2 LV LT LG RC1 OLD_NONUUID INVAI_IDS TEST_IDS GATE_IDS FAIL_DB
+  OUT="$( ( source "$SRC"; source "$T/stubs.sh"; eval "purge_collect_live() { $1; }"; PURGE_NOW=$NOW; purge_main --apply; echo "rc=$?" ) 2>&1 )"
+  RC="${OUT##*rc=}"; CALLS="$(cat "$T/calls")"
+}
+run_with ': >"$1"; echo "$LV" >"$1.invai"; return 0'
+eq "an empty live file refuses (nothing deleted)" "$CALLS" ""; eq "  ... exit 1" "$RC" 1
+run_with 'rm -f "$1" "$1.invai"; return 0'
+eq "a missing live file refuses (nothing deleted)" "$CALLS" ""; eq "  ... exit 1" "$RC" 1
+run_with 'echo "$LT" >"$1"; echo "$LV" >"$1.invai"; return 0'
+eq "a live file lacking the invai ids just read refuses" "$CALLS" ""; eq "  ... exit 1" "$RC" 1
+run_with 'echo "$LV" >"$1"; echo "$LV" >"$1.invai"; chmod 000 "$1"; return 0'
+eq "an unreadable live file (grep exit 2) refuses, never 'not live'" "$CALLS" ""; eq "  ... exit 1" "$RC" 1
+( source "$SRC"; printf '%s\t1\t1\t1\n' "$O1" | purge_plan "$T/no-such-file" 1800000000 >"$T/o" 2>/dev/null; echo "rc=$?" >"$T/rc" )
+eq "purge_plan: an old uuid prefix with an unreadable live file is not an orphan" "$(cat "$T/o")|$(cat "$T/rc")" "|rc=1"
+grep -q 'purge_check_live "\$live"' "$SRC" && ok "main checks the live file before planning" || bad "main checks the live file"
 
 # usage
 run --nope; case "$OUT" in *usage*) ok "unknown flag is refused" ;; *) bad "unknown flag ($OUT)" ;; esac

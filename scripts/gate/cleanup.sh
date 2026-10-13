@@ -33,9 +33,13 @@ gate_valid_prefix() {
 
 # gate_flush_valkey_db <db>: flushes one Valkey DB, and only the gate's own (9).
 gate_flush_valkey_db() {
-  local db="$1"
+  local db="$1" who
   if [ "$db" != 9 ]; then
     log "cleanup refused: Valkey DB '$db' is not the gate's DB 9"
+    return 1
+  fi
+  if who="$(gate_full_profile_running)"; then
+    log "cleanup refused: compose full profile is running ($who) and shares Valkey DB 9"
     return 1
   fi
   docker exec "${GATE_VALKEY_CONTAINER:-local-valkey-1}" valkey-cli -n 9 FLUSHDB >>"$LOG_FILE" 2>&1

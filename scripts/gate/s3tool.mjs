@@ -96,6 +96,8 @@ if (cmd === "scan") {
 } else if (cmd === "delete-prefix") {
   const prefix = args[0] ?? "";
   if (!UUID_PREFIX.test(prefix)) die(`refusing prefix '${prefix}': must be exactly <uuid>/`);
+  // second, independent shape check: exactly 36 UUID characters plus one slash, never empty
+  if (prefix.length !== 37 || prefix.indexOf("/") !== 36) die(`refusing prefix '${prefix}': wrong length`);
   if (bucket !== DELETE_BUCKET) die(`refusing to delete in bucket '${bucket}'`);
   let n = 0;
   let b = 0;

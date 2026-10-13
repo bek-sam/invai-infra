@@ -106,7 +106,13 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   (each pinned by `scripts/gate/cleanup.test.sh`): the database name must be exactly `invai_gate`;
   a prefix that is also a company id in `invai` is refused; an empty `invai` company list is a
   refusal; only `<uuid>/` prefixes of bucket `invai-local` on a localhost endpoint are ever deleted
-  (`scripts/gate/s3tool.mjs`, no bucket-level delete). Logs and traces under `.gate/` stay.
+  (`scripts/gate/s3tool.mjs`, no bucket-level delete); `delete-prefix` itself refuses an empty,
+  non-UUID or slash-less prefix and any bucket but `invai-local`, whatever the caller checked.
+  Valkey DB 9 is also used by the compose `full` profile, so the gate refuses to start, and the
+  flush refuses, while any full-profile container (`local-api-1`, `-worker-1`, ...) runs; run
+  `scripts/full.sh down` first. The two cleanup tests are hermetic: they pin `S3_ENDPOINT` to the
+  closed port 1, use non-existent containers and databases, and abort unless that endpoint is
+  proven dead, so a mutated fence cannot delete real files. Logs and traces under `.gate/` stay.
 - **No file watchers in the gate (B-388).** The gate starts `dev:all` with `INVAI_NO_WATCH=1`;
   `dev.sh` then runs the api and worker with plain `tsx` and imaging without `--reload`, so an edit
   made during a gate run cannot restart them. A plain `pnpm dev:all` still watches.

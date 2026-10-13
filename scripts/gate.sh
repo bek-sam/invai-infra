@@ -81,6 +81,9 @@ if [ "$needs_golden_path" -eq 1 ]; then
   # A9: a previous run killed with SIGKILL may have left the dev seed-output.json swapped.
   gate_restore_dev_seed
   why="$(gate_refuse_paid_ai)" || refuse "$why in the gate's environment; paid AI spend on $GATE_DB_NAME would escape the dev ledger"
+  if who="$(gate_full_profile_running)"; then
+    refuse "the compose full profile is running ($who) and shares Valkey DB 9 with the gate; run scripts/full.sh down first"
+  fi
   gate_scratch_env
 fi
 

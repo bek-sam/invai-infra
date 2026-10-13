@@ -52,7 +52,7 @@ purge_valid_prefix() { # exactly a lowercase UUID plus the trailing slash
 # the databases cannot be listed, any database cannot be read, or `invai` has no companies.
 purge_collect_live() {
   local out="$1" dbs db ids invai_n=0
-  : >"$out"
+  : >"$out"; : >"$out.invai"
   if ! dbs="$(purge_databases)" || [ -z "$dbs" ]; then
     echo "refused: cannot list the local databases" >&2
     return 1
@@ -63,7 +63,10 @@ purge_collect_live() {
       return 1
     fi
     [ -n "$ids" ] && printf '%s\n' "$ids" >>"$out"
-    [ "$db" = invai ] && invai_n="$(printf '%s' "$ids" | grep -c . || true)"
+    if [ "$db" = invai ]; then
+      invai_n="$(printf '%s' "$ids" | grep -c . || true)"
+      [ -n "$ids" ] && printf '%s\n' "$ids" >"$out.invai"
+    fi
   done
   if [ "${invai_n:-0}" -eq 0 ]; then
     echo "refused: the company list of the dev database invai is empty or unreadable" >&2
@@ -72,21 +75,43 @@ purge_collect_live() {
   return 0
 }
 
+# purge_in_live <prefix> <live file>: 0 = live, 1 = not live. Any grep failure (exit above 1, such as
+# a missing or unreadable file) is returned as 2 and is a refusal for the caller, never "not live".
+purge_in_live() {
+  grep -qxF "$1" "$2" 2>/dev/null
+  case $? in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# purge_check_live <live file> <invai ids file>: refuses (returns 1) when the live file is missing,
+# empty or unreadable, or lacks any of the invai company ids that were just read.
+purge_check_live() {
+  local live="$1" id rc
+  if [ ! -s "$live" ]; then echo "refused: the live company file is missing or empty" >&2; return 1; fi
+  if [ ! -s "$2" ]; then echo "refused: the invai id file is missing or empty" >&2; return 1; fi
+  while IFS= read -r id; do
+    purge_in_live "$id" "$live"; rc=$?
+    if [ $rc -ne 0 ]; then echo "refused: the live company file lacks invai id '$id' (check $rc)" >&2; return 1; fi
+  done <"$2"
+  return 0
+}
+
 # purge_plan <live file> <now epoch>: reads `scan` TSV on stdin, writes
 # "<class>\t<prefix>\t<objects>\t<bytes>" with class orphan | live | recent | non-uuid | root.
 purge_plan() {
-  local live="$1" now="$2" p n b t
+  local live="$1" now="$2" p n b t rc
   while IFS=$'\t' read -r p n b t; do
     if [ "$p" = "(root)" ]; then echo "root	$p	$n	$b"; continue; fi
     if ! purge_valid_prefix "$p/"; then echo "non-uuid	$p	$n	$b"; continue; fi
-    if grep -qxF "$p" "$live"; then echo "live	$p	$n	$b"; continue; fi
+    purge_in_live "$p" "$live"; rc=$?
+    if [ $rc -gt 1 ]; then echo "refused: cannot read the live company file" >&2; return 1; fi
+    if [ $rc -eq 0 ]; then echo "live	$p	$n	$b"; continue; fi
     if [ $((now - t)) -lt "$PURGE_MIN_AGE_SECONDS" ]; then echo "recent	$p	$n	$b"; continue; fi
     echo "orphan	$p	$n	$b"
   done
 }
 
 purge_main() {
-  local apply=0 arg tmp live scan plan now c n b total_n total_b
+  local apply=0 arg tmp live scan plan now c n b total_n total_b rc
   for arg in "$@"; do
     case "$arg" in
       --apply) apply=1 ;;
@@ -97,9 +122,10 @@ purge_main() {
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" RETURN
   purge_collect_live "$live" || return 1
+  purge_check_live "$live" "$live.invai" || return 1
   if ! purge_s3 scan >"$scan"; then echo "refused: cannot scan the bucket" >&2; return 1; fi
   now="${PURGE_NOW:-$(date +%s)}"
-  purge_plan "$live" "$now" <"$scan" >"$plan"
+  purge_plan "$live" "$now" <"$scan" >"$plan" || return 1
 
   echo "mode: $([ $apply -eq 1 ] && echo APPLY || echo 'dry run (nothing is deleted)'); bucket invai-local; company ids known: $(sort -u "$live" | grep -c .)"
   for c in orphan recent live non-uuid root; do
@@ -118,8 +144,10 @@ purge_main() {
   while IFS=$'\t' read -r cls p o by; do
     [ "$cls" = orphan ] || continue
     # last look before every delete: shape and live set again
+    purge_check_live "$live" "$live.invai" || return 1
     purge_valid_prefix "$p/" || { echo "refused prefix '$p/'" >&2; continue; }
-    if grep -qxF "$p" "$live"; then echo "refused live company prefix '$p/'" >&2; continue; fi
+    purge_in_live "$p" "$live"; rc=$?
+    if [ $rc -ne 1 ]; then echo "refused prefix '$p/': live check said $rc" >&2; continue; fi
     if purge_s3 delete-prefix "$p/" >/dev/null; then
       total_n=$((total_n + 1)); total_b=$((total_b + by))
     else

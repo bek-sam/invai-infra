@@ -419,3 +419,15 @@ gate_reset_buckets_for() {
   GATE_OVERALL_FAILED=1
   return 1
 }
+
+# gate_full_profile_running: prints the running compose `full` profile containers (they use Valkey
+# DB 9 too, local/docker-compose.yml) and returns 0 when there is at least one (T-42-2 round 2).
+# A docker that cannot answer counts as "running": no answer is never read as "all clear".
+gate_full_profile_running() {
+  local names
+  if ! names="$(docker ps --format '{{.Names}}' 2>/dev/null)"; then echo "docker did not answer"; return 0; fi
+  names="$(printf '%s\n' "$names" | grep -E '^local-(full-db-init|migrate|api|worker|imaging|web|floor)-1$' || true)"
+  [ -n "$names" ] || return 1
+  printf '%s\n' "$names" | tr '\n' ' '
+  return 0
+}
