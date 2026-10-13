@@ -165,6 +165,17 @@ case "$OUT" in *"bucket invai-gate"*"deleted 2 prefixes, 400 bytes from bucket i
 case "$OUT" in *"bucket invai-local"*) bad "output of an invai-gate run says invai-local ($OUT)" ;; *) ok "output of an invai-gate run never says invai-local" ;; esac
 if printf '%s\n' "$OUT" | grep -qE '^  invai-gate$'; then bad "the scanned bucket is not listed as 'other'"; else ok "the scanned bucket is not listed as 'other'"; fi
 
+# the default (node) branch of the wrapper: a fake s3tool.mjs in PURGE_TOOLS_DIR records the S3_BUCKET it was started with
+mkdir -p "$T/fakegate"
+cat >"$T/fakegate/s3tool.mjs" <<'FAKE'
+import { appendFileSync } from "node:fs";
+appendFileSync(process.env.TOOLLOG, `S3_BUCKET=${process.env.S3_BUCKET} ${process.argv.slice(2).join(" ")}\n`);
+if (process.argv[2] === "scan") process.stdout.write("(root)\t1\t1\t1\n");
+FAKE
+: >"$T/toolcalls"
+OUT="$( ( unset PURGE_S3_TOOL; export TOOLLOG="$T/toolcalls" PURGE_TOOLS_DIR="$T/fakegate" INVAI_IDS="$LV" TEST_IDS="" GATE_IDS="" FAIL_DB="" NOW; source "$SRC"; source "$T/stubs.sh"; PURGE_NOW=$NOW; purge_main --bucket invai-gate; echo "rc=$?" ) 2>&1 )"
+eq "node branch: scan and buckets carried S3_BUCKET=invai-gate over an exported invai-local" "$(sort -u "$T/toolcalls" | tr '\n' ';')" "S3_BUCKET=invai-gate buckets;S3_BUCKET=invai-gate scan;"
+
 # usage
 run --bucket invai-gate --nope; case "$OUT" in *usage*) ok "unknown flag is refused" ;; *) bad "unknown flag ($OUT)" ;; esac
 eq "unknown flag deletes nothing" "$CALLS" ""
