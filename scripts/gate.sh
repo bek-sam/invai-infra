@@ -7,6 +7,9 @@
 #   pytest) per repo.
 # - If invai-backend, invai-web or invai-floor is in scope, also resets/migrates/seeds the scratch DB
 #   invai_gate on Valkey DB 9 (T-41-4; never the dev DB `invai`; imaging up) and runs the API golden path, the browser suite and the floor suite.
+# - Removes its own MinIO files (every company in invai_gate) and flushes Valkey DB 9 at the end of
+#   every run and, for a run killed without its trap, at the start of the next (T-42-2).
+# - Starts api, worker and imaging without file watchers (B-388).
 # - Refuses to start rather than fight another process (AC3); never kills anything it didn't
 #   start (trap in lib.sh stops only PIDs this run recorded).
 # - On a full pass, writes invai-infra/.gate/pass.json (gitignored) with each repo's HEAD SHA and
@@ -33,6 +36,8 @@ source "$SCRIPT_DIR/gate/lib.sh"
 source "$SCRIPT_DIR/gate/ports.sh"
 # shellcheck source=gate/scratch.sh
 source "$SCRIPT_DIR/gate/scratch.sh"
+# shellcheck source=gate/cleanup.sh
+source "$SCRIPT_DIR/gate/cleanup.sh"
 
 # Ports come from INVAI_*_PORT (T-36-1); validate and export before anything starts.
 resolve_ports || refuse "$PORT_ERROR"
@@ -124,6 +129,11 @@ run_golden_path() {
     GATE_OVERALL_FAILED=1
     return
   fi
+
+  # T-42-2: files of the previous run's seed (a killed run skips its trap, and the reset below
+  # would lose the ids), then arm the end-of-run cleanup that the EXIT trap performs.
+  GATE_CLEANUP_ARMED=1
+  gate_cleanup_run start
 
   section "golden path: reset, migrate, seed on $GATE_DB_NAME"
   if ! gate_ensure_db; then

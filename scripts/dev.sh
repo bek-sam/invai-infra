@@ -122,12 +122,21 @@ if [ -n "${INVAI_API_PORT:-}" ]; then
   web_env="VITE_API_URL=http://localhost:$API_PORT "
   floor_env="VITE_API_PROXY=http://localhost:$API_PORT "
 fi
+# B-388: the gate sets INVAI_NO_WATCH=1 so a backend or imaging edit cannot restart the stack mid-run.
+api_cmd="pnpm dev:api"
+worker_cmd="pnpm dev:worker"
+imaging_reload=" --reload"
+if [ "${INVAI_NO_WATCH:-}" = 1 ]; then
+  api_cmd="pnpm exec tsx --import ./src/lib/telemetry.ts src/api/server.ts"
+  worker_cmd="pnpm exec tsx --import ./src/lib/telemetry.ts src/worker/index.ts"
+  imaging_reload=""
+fi
 exec node_modules/.bin/concurrently \
   --names "api,worker,imaging,web,floor" \
   --prefix-colors "blue,magenta,green,yellow,cyan" \
   --prefix "[{name}]" \
-  "cd ../invai-backend && pnpm dev:api" \
-  "cd ../invai-backend && pnpm dev:worker" \
-  "cd ../invai-imaging && uv run uvicorn app.main:app --host 0.0.0.0 --port $IMAGING_PORT --reload" \
+  "cd ../invai-backend && $api_cmd" \
+  "cd ../invai-backend && $worker_cmd" \
+  "cd ../invai-imaging && uv run uvicorn app.main:app --host 0.0.0.0 --port $IMAGING_PORT$imaging_reload" \
   "cd ../invai-web && ${web_env}pnpm dev --port $WEB_PORT --strictPort" \
   "cd ../invai-floor && ${floor_env}pnpm dev --port $FLOOR_PORT --strictPort"

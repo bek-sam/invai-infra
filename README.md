@@ -97,6 +97,24 @@ suite and the floor suite — see `run-golden-path` for what that covers.
   INT, TERM traps); after a SIGKILL the next gate start restores it first. Open item B-floor-seed-env:
   the floor E2E helper should honor `E2E_SEED_OUTPUT_FILE` (qa-engineer), then the swap can go.
   Tests: `pnpm gate:test`.
+- **The gate cleans up after itself (T-42-2).** Each golden-path run adds about 150 MB of files to
+  MinIO bucket `invai-local` under the seed's company ids. When the stack has stopped (the EXIT
+  trap, so pass, fail, Ctrl-C and error exits), the gate reads the company ids from
+  `invai_gate.companies`, deletes each exact `<uuid>/` prefix, flushes Valkey DB 9 (it refuses any
+  other DB number), and logs one line with the prefix count and bytes. A run killed with SIGKILL
+  skips the trap, so the next run does the same for the previous seed before its reset. Fences
+  (each pinned by `scripts/gate/cleanup.test.sh`): the database name must be exactly `invai_gate`;
+  a prefix that is also a company id in `invai` is refused; an empty `invai` company list is a
+  refusal; only `<uuid>/` prefixes of bucket `invai-local` on a localhost endpoint are ever deleted
+  (`scripts/gate/s3tool.mjs`, no bucket-level delete). Logs and traces under `.gate/` stay.
+- **No file watchers in the gate (B-388).** The gate starts `dev:all` with `INVAI_NO_WATCH=1`;
+  `dev.sh` then runs the api and worker with plain `tsx` and imaging without `--reload`, so an edit
+  made during a gate run cannot restart them. A plain `pnpm dev:all` still watches.
+- **One-off orphan purge (T-42-2).** `pnpm purge:orphans` is a dry run (counts and bytes per class);
+  `pnpm purge:orphans -- --apply` deletes. Only top-level UUID prefixes of `invai-local` that are
+  not a company id in any local database with a `companies` table and have no object changed in the
+  last 6 hours are deleted; non-UUID prefixes, root objects and other buckets are only listed. It
+  refuses when `invai` has no readable company list. Tests: `scripts/purge-orphan-files.test.sh`.
 
 ## Local services (infra only)
 

@@ -32,7 +32,9 @@ start_dev_all() {
   local was_m=0
   case $- in *m*) was_m=1 ;; esac
   set -m
-  (cd "$INFRA_DIR" && pnpm dev:all) >>"$LOG_FILE" 2>&1 &
+  # B-388: INVAI_NO_WATCH=1 makes dev.sh start api, worker and imaging without file watchers, so an
+  # edit made while the gate runs cannot restart them mid-suite.
+  (cd "$INFRA_DIR" && INVAI_NO_WATCH=1 pnpm dev:all) >>"$LOG_FILE" 2>&1 &
   local pgid=$!
   [ "$was_m" -eq 1 ] || set +m
   echo "$pgid"
@@ -94,6 +96,12 @@ cleanup() {
     [ -z "$pid" ] && continue
     stop_group "$pid"
   done
+  # T-42-2: with the stack stopped, remove this run's files and flush the scratch Valkey DB
+  # (defined in cleanup.sh; armed by gate.sh once the golden-path phase starts).
+  if [ "${GATE_CLEANUP_ARMED:-0}" = 1 ] && declare -F gate_cleanup_run >/dev/null; then
+    GATE_CLEANUP_ARMED=0
+    gate_cleanup_run end
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
