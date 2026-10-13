@@ -74,6 +74,16 @@ chk "end of run" "$A $B" "invai-gate $A/ 5
 invai-local $B/ 7"
 eq "the company created later is checked and its file in invai-local fails the end-of-run check" "$RC|$OVERALL" "1|1"
 
+# same process, two checks, ids changing in between (the real gate): the second check re-reads the ids
+printf 'invai-gate %s/ 5\ninvai-local %s/ 7\n' "$A" "$B" >"$T/table"; : >"$T/calls"; : >"$T/log"
+OUT="$( ( export LOG_FILE="$T/log" GATE_DIR="$T" WORKSPACE_DIR="$T" INFRA_DIR="$T" TOOLLOG="$T/calls" TABLE="$T/table" GATE_S3_TOOL="$T/tool.sh" IDS="$A"
+  source "$SRC/gate/lib.sh"; source "$SRC/gate/scratch.sh"; source "$SRC/gate/cleanup.sh"; source "$SRC/gate/bucketcheck.sh"
+  GATE_OVERALL_FAILED=0
+  gate_company_ids() { printf '%s\n' $IDS; }
+  gate_bucket_landing_check "after seed"; r1=$?; IDS="$A $B"; gate_bucket_landing_check "end of run"; r2=$?
+  echo "r1=$r1 r2=$r2" ) 2>&1 )"
+case "$OUT" in *"r1=0 r2=1") ok "the end-of-run check re-reads the company ids (E2E created a company) and catches it" ;; *) bad "re-read of company ids ($OUT)" ;; esac
+
 # static: gate.sh runs the check after the seed and after the floor suite, before the EXIT cleanup
 G="$SRC/gate.sh"
 ln() { grep -n "$1" "$G" | head -n1 | cut -d: -f1; }
