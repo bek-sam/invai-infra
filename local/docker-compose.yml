@@ -55,20 +55,28 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: creates the invai-local bucket and denies anonymous access, then exits.
-  # `docker/minio/minio` on Docker Hub no longer exists; this uses quay.io/minio/mc,
-  # matching the quay.io/minio/minio server image above.
+  # One-shot: creates the invai-local bucket, denies anonymous access, turns on versioning and
+  # installs the lifecycle rule (scripts/minio-lifecycle.json: one rule "housekeeping", old versions
+  # expire after 7 days, like prod), then exits. Versioning means a delete or overwrite leaves the
+  # old version for 7 days (incident 2026-10-13, B-398). `mc ilm import` replaces the whole config,
+  # so every `compose up` leaves exactly one rule. `docker/minio/minio` on Docker Hub no longer
+  # exists; this uses quay.io/minio/mc (pinned by digest, as minio-init-full), matching the
+  # quay.io/minio/minio server image above. The `full` profile bucket stays unversioned.
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       minio:
         condition: service_healthy
+    volumes:
+      - ../scripts/minio-lifecycle.json:/lifecycle.json:ro
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 invai invai-secret &&
       mc mb --ignore-existing local/invai-local &&
       mc anonymous set none local/invai-local &&
-      echo 'minio-init: bucket invai-local ready'
+      mc version enable local/invai-local &&
+      mc ilm import local/invai-local < /lifecycle.json &&
+      echo 'minio-init: bucket invai-local ready (versioned, 7-day old-version expiry)'
       "
     restart: "no"
 

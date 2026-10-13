@@ -144,8 +144,18 @@ Every port above is published on `127.0.0.1` only, not on the LAN (B-322). Conta
   hence `quay.io`), console on :9001. `MINIO_API_CORS_ALLOW_ORIGIN=*` is set explicitly
   (MinIO's own default) — MinIO's per-bucket `PutBucketCors` S3 API returns `NotImplemented`
   on the current server image, so CORS has to be the server-wide setting, not `mc cors set`.
-- **minio-init** — one-shot `quay.io/minio/mc`: creates bucket `invai-local`, sets anonymous
-  access to `none`, then exits. Depends on `minio` being healthy.
+- **minio-init** — one-shot `quay.io/minio/mc` (pinned by digest): creates bucket `invai-local`,
+  sets anonymous access to `none`, turns on versioning and installs one lifecycle rule
+  (`scripts/minio-lifecycle.json`, id `housekeeping`), then exits. Depends on `minio` being healthy.
+  **Local files keep deleted or overwritten versions for 7 days** (incident 2026-10-13). A delete
+  leaves a hidden delete marker plus the old version; apps and `s3tool` see the file as gone. To list
+  and restore one (use the `mc` image and `local_default` network, or any `mc` with the `invai`
+  alias): `mc ls --versions local/invai-local/<key>`, then
+  `mc cp --version-id <id> local/invai-local/<key> local/invai-local/<key>`.
+  Disk freed by the gate cleanup or the purge tool therefore comes back after about 7 days (the
+  MinIO scanner expires old versions), not at once; the local PII purge keeps old versions for 7
+  days, as production does. The `full` profile bucket `invai-full` stays unversioned (disposable).
+  Proof it works, on a throwaway bucket only (never `invai-local`): `bash scripts/minio-versioning.test.sh` (from `invai-infra`, stack up).
 - **mailpit** — `axllent/mailpit`, SMTP on :1025 (no auth), UI/API on :8025. Catches vendor
   and invite emails sent locally; point `invai-backend`'s SMTP env vars at
   `localhost:1025`.
