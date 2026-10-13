@@ -327,6 +327,18 @@ export default $config({
       ],
     };
 
+    // S-87 (T-49-2): no service links the bucket (`link` grants s3:*). Each gets the explicit
+    // allow list plus the Deny of old-version, versioning, lifecycle and policy actions from
+    // infra/files-access.ts; scripts/files-iam.test.sh checks all four services use it.
+    const {
+      filesStatements,
+      appLogGroupName,
+      metricNamespace,
+      UNHANDLED_REJECTION_ALARM,
+      UNHANDLED_REJECTION_FILTER_PATTERN,
+    } = await import("./infra/files-access");
+    const filesAccess = filesStatements(files.arn, $interpolate`${files.arn}/*`);
+
     // Imaging: internal only, no load balancer. Reached through Cloud Map service discovery
     // (`imaging.service`); `imaging.url` throws for a service with no public port (B-57).
     const imaging = new sst.aws.Service("Imaging", {
@@ -336,7 +348,7 @@ export default $config({
       cpu: "2 vCPU",
       memory: "8 GB",
       storage: "40 GB",
-      link: [files],
+      permissions: filesAccess,
       environment: {
         IMAGING_ENV: "production",
         IMAGING_DEV_ENDPOINTS: "false",
@@ -402,8 +414,8 @@ export default $config({
       command: ["node", "--import", "./dist/lib/telemetry.js", "dist/api/server.js"],
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      link: [files],
-      permissions: [kmsPermission],
+      permissions: [...filesAccess, kmsPermission],
+      logging: { name: appLogGroupName(stage, "api") },
       environment: {
         ...backendEnvironment,
         ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-api", stage),
@@ -446,15 +458,15 @@ export default $config({
       },
     });
 
-    new sst.aws.Service("Worker", {
+    const worker = new sst.aws.Service("Worker", {
       cluster,
       architecture: "arm64",
       image: backendImage,
       command: ["node", "--import", "./dist/lib/telemetry.js", "dist/worker/index.js"],
       cpu: "1 vCPU",
       memory: "2 GB",
-      link: [files],
-      permissions: [kmsPermission],
+      permissions: [...filesAccess, kmsPermission],
+      logging: { name: appLogGroupName(stage, "worker") },
       environment: {
         ...backendEnvironment,
         ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-worker", stage),
@@ -479,13 +491,55 @@ export default $config({
       ],
       cpu: "0.5 vCPU",
       memory: "1 GB",
-      link: [files],
-      permissions: [kmsPermission],
+      permissions: [...filesAccess, kmsPermission],
       environment: backendEnvironment,
       ssm: backendSsm,
       dev: false,
       transform: { executionRole },
     });
+
+    // ---- Crash alarm (B-306) -------------------------------------------------------------
+    // The api and worker log `unhandled rejection` and keep running, so ECS never notices. One
+    // metric filter per log group counts those lines into the same metric; one alarm per stage
+    // fires on the first one in 5 minutes. The topic has NO subscription on purpose: nothing is
+    // sent anywhere until the owner sets an address (OI-37, OI-41) and a later card adds it.
+    const opsAlerts = new aws.sns.Topic("OpsAlerts");
+    const crashMetric = {
+      name: UNHANDLED_REJECTION_ALARM.metricName,
+      namespace: metricNamespace(stage),
+      value: "1",
+    };
+    const apiCrashFilter = new aws.cloudwatch.LogMetricFilter(
+      "ApiUnhandledRejection",
+      {
+        logGroupName: appLogGroupName(stage, "api"),
+        pattern: UNHANDLED_REJECTION_FILTER_PATTERN,
+        metricTransformation: crashMetric,
+        name: "ApiUnhandledRejection",
+      },
+      { dependsOn: [api] },
+    );
+    const workerCrashFilter = new aws.cloudwatch.LogMetricFilter(
+      "WorkerUnhandledRejection",
+      {
+        logGroupName: appLogGroupName(stage, "worker"),
+        pattern: UNHANDLED_REJECTION_FILTER_PATTERN,
+        metricTransformation: crashMetric,
+        name: "WorkerUnhandledRejection",
+      },
+      { dependsOn: [worker] },
+    );
+    new aws.cloudwatch.MetricAlarm(
+      "UnhandledRejectionAlarm",
+      {
+        alarmDescription:
+          "A service swallowed an unhandled rejection. Runbook: invai-docs/ops/incident-response.md",
+        namespace: metricNamespace(stage),
+        ...UNHANDLED_REJECTION_ALARM,
+        alarmActions: [opsAlerts.arn],
+      },
+      { dependsOn: [apiCrashFilter, workerCrashFilter] },
+    );
 
     // ---- Static sites (CloudFront) -------------------------------------------------------
     // CloudFront serves no CSP by itself, so the viewer-response function adds the same
