@@ -9,6 +9,8 @@
 #   invai_gate on Valkey DB 9 (T-41-4; never the dev DB `invai`; imaging up) and runs the API golden path, the browser suite and the floor suite.
 # - Checks, read only, after the seed and after the floor suite that its files are in invai-gate and none
 #   in invai-local (T-46-2); a miss fails the run.
+# - Compares the Docker VM clock with the Mac clock at the start and between suites; a skew over 10 s
+#   (or an unreadable clock) ends the run with one FAIL line and no stamp (T-55-4, gate/clock.sh).
 # - Removes its own MinIO files (every company in invai_gate) and flushes Valkey DB 9 at the end of
 #   every run and, for a run killed without its trap, at the start of the next (T-42-2).
 # - Starts api, worker and imaging without file watchers (B-388).
@@ -44,6 +46,8 @@ source "$SCRIPT_DIR/gate/cleanup.sh"
 source "$SCRIPT_DIR/gate/bucketcheck.sh"
 # shellcheck source=gate/testdb.sh
 source "$SCRIPT_DIR/gate/testdb.sh"
+# shellcheck source=gate/clock.sh
+source "$SCRIPT_DIR/gate/clock.sh"
 
 # Ports come from INVAI_*_PORT (T-36-1); validate and export before anything starts.
 resolve_ports || refuse "$PORT_ERROR"
@@ -91,6 +95,8 @@ if [ "$needs_golden_path" -eq 1 ]; then
     refuse "the compose full profile is running ($who) and shares Valkey DB 9 with the gate; run scripts/full.sh down first"
   fi
   gate_scratch_env
+  # T-55-4: a Docker VM clock that drifted from the Mac fails time-based tests (wave 54); stop first.
+  gate_clock_check "start"
 fi
 
 log "gate run: repos=${GATE_REPOS[*]} golden_path=$needs_golden_path"
@@ -112,6 +118,9 @@ for r in "${GATE_REPOS[@]}"; do
   done
   if [ "$r" = invai-contracts ]; then
     run_contracts_check
+  fi
+  if [ "$needs_golden_path" -eq 1 ]; then
+    gate_clock_check "after $r checks"
   fi
 done
 
@@ -170,6 +179,7 @@ run_golden_path() {
 
   # T-46-2: the seed's files must be in invai-gate and none in the dev bucket (read-only counts).
   gate_bucket_landing_check "after seed" || return
+  gate_clock_check "after seed"
 
   # Stop the imaging group (own process group), then start the whole stack once. The group is
   # stopped as a group so nothing keeps the imaging port under the new imaging.
@@ -188,6 +198,7 @@ run_golden_path() {
   fi
 
   section "golden path: API suite"
+  gate_clock_check "before API suite"
   gate_reset_buckets_for "API suite" || return
   local out rc
   out="$(cd "$WORKSPACE_DIR/invai-web" && E2E_API=1 pnpm e2e e2e/api-golden-path.spec.ts 2>&1)"
@@ -199,8 +210,10 @@ run_golden_path() {
     echo "FAIL invai-web api-golden-path: $(failing_names "$out")"
     GATE_OVERALL_FAILED=1
   fi
+  gate_clock_check "after API suite"
 
   section "golden path: browser suite (golden path + screens smoke)"
+  gate_clock_check "before browser suite"
   gate_reset_buckets_for "browser suite" || return
   out="$(cd "$WORKSPACE_DIR/invai-web" && pnpm e2e 2>&1)"
   rc=$?
@@ -211,8 +224,10 @@ run_golden_path() {
     echo "FAIL invai-web e2e: $(failing_names "$out")"
     GATE_OVERALL_FAILED=1
   fi
+  gate_clock_check "after browser suite"
 
   section "golden path: floor suite"
+  gate_clock_check "before floor suite"
   gate_reset_buckets_for "floor suite" || return
   gate_swap_dev_seed || { echo "FAIL golden-path floor seed swap: see $LOG_FILE"; GATE_OVERALL_FAILED=1; return; }
   out="$(cd "$WORKSPACE_DIR/invai-floor" && pnpm e2e 2>&1)"
@@ -225,6 +240,7 @@ run_golden_path() {
     echo "FAIL invai-floor e2e: $(failing_names "$out")"
     GATE_OVERALL_FAILED=1
   fi
+  gate_clock_check "after floor suite"
 
   # T-46-2: the suites (api, worker, imaging, E2E-created companies) wrote files too; check again
   # before the EXIT trap's cleanup deletes them.
