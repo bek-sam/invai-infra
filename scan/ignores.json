@@ -70,6 +70,17 @@
       "reason": "false positive in one historical commit: the T-38-4 round 1 report quoted the already-ignored identifier-list phrase from the T-37-5 report (two plain words joined by a slash, not a credential). Local history is not rewritten; the working-tree line is reworded (docs 248ae6d). Exact path + rule + this one commit + the whole line, anchored at both ends; the tree and every later commit are still scanned",
       "owner": "platform-sre",
       "expires": "2027-04-10"
+    },
+    {
+      "tool": "gitleaks",
+      "id": "docs-slug-t53-2-review",
+      "rule": "generic-api-key",
+      "targets": ["invai-docs"],
+      "path_regex": "(^|/)waves/53/reviews/T-53-2-backend-foundation-r1\\.md$",
+      "line_regex": "^\\n?\\|[^\\n]*`/[a-z]{3}/[a-z]{5}-[a-z][0-9]{2}-[A-Z]-[0-9]{2}-[0-9]-[a-z]{2}`[^\\n]*$",
+      "reason": "false positive (B-468): one table row in the wave 53 T-53-2 backend-foundation review has a backtick-quoted, slash-prefixed identifier made of short lowercase words, a short letter-and-digit group, one capital letter and short digit groups joined by hyphens (24 characters, entropy 3.8, no key prefix such as sk-, AKIA, ghp_ or xox); it is a name, not a credential. Committed history cannot change. Exact path (history and working-tree forms) + rule + the row shape; any other line or file in that review is still scanned",
+      "owner": "platform-sre",
+      "expires": "2027-04-10"
     }
   ]
 }
