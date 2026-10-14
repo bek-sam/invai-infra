@@ -24,13 +24,14 @@ cat >"$T/bin/pnpm" <<EOF
 echo \$\$ >"$T/pnpmpid"
 { echo "TEST_DATABASE_URL=\$TEST_DATABASE_URL"; echo "TEST_MIGRATION_DATABASE_URL=\$TEST_MIGRATION_DATABASE_URL"
   echo "REDIS_URL=\$REDIS_URL"; echo "TEST_REDIS_URL=\${TEST_REDIS_URL-<unset>}"; echo "PGAPPNAME=\$PGAPPNAME"; } >"$T/capt"
+[ -z "\$STUB_OUT" ] || printf '%b\\n' "\$STUB_OUT"
 sleep 1
 exit \${STUB_RC:-0}
 EOF
 cat >"$T/bin/docker" <<EOF
 #!/bin/sh
 case "\$*" in
-  *--scan*) echo test-redis-db-lock:7 ;;
+  *--scan*) [ "\$STUB_NOREG" = 1 ] || echo test-redis-db-lock:\${STUB_REGDB:-7} ;;
   *GET*) echo "\$(cat "$T/pnpmpid" 2>/dev/null):0000" ;;
 esac
 exit 0
@@ -71,11 +72,13 @@ gate_psql_admin() {
   return 0
 }
 STUB
-# rs <pnpm exit code> <foreign session 0|1> -> OUT (gate stdout+state), ERR, LOGTXT, STMTS, CAPT
+# rs <pnpm exit code> <foreign session 0|1> [suite output lines (printf %b)] [no registry claim 0|1] [registry DB]
+# -> OUT (gate stdout+state), ERR, LOGTXT, STMTS, CAPT
 rs() {
   : >"$T/log"; : >"$T/stmts"; rm -f "$T/capt" "$T/pnpmpid" "$T/err"
   OUT="$(
     export LOG_FILE="$T/log" WORKSPACE_DIR="$T/ws" INFRA_DIR="$T/ws/invai-infra" GATE_DIR="$T/ws/invai-infra/.gate" API_PORT=3000
+    export STUB_OUT="${3:-}" STUB_NOREG="${4:-0}" STUB_REGDB="${5:-7}"
     export PATH="$T/bin:$PATH" STUB_RC="$1" GATE_WATCH_INTERVAL=0.2 TMPDIR="$T"
     # the hostile environment the golden path exports and a developer shell may carry
     export REDIS_URL=redis://localhost:6379/9 TEST_REDIS_URL=redis://localhost:6379/15
@@ -113,6 +116,62 @@ eq "a clean suite leaves the gate green" "$(printf '%s' "$OUT" | grep -c 'overal
 rs 1 0
 has "the gate dropped the database after a FAILING suite too (before the EXIT trap)" "${STMTS%%--- run_suite returned*}" "drop database if exists"
 has "a failing suite is reported" "$OUT" "FAIL invai-backend test:"
+
+# ---------- T-51-2 (B-436): the Valkey DB comes from the harness line, the sampler is the fallback ----------
+H='[test-redis] claimed Valkey DB'
+vh() { ( export LOG_FILE="$T/log"; source "$SRC/gate/lib.sh"; source "$SRC/gate/testdb.sh"; gate_harness_valkey_db "$1"; echo "rc=$?" ); }
+eq "harness line: claimed 3 is read" "$(vh "$H 3 (registry DB 15); cleared 2 leftover keys")" "3
+rc=0"
+eq "harness line: the first of identical lines wins, both agree" "$(vh "noise
+$H 5 (registry DB 15); cleared 0 leftover keys
+$H 5 (registry DB 15); cleared 0 leftover keys")" "5
+rc=0"
+eq "no harness line: rc 2 (fallback to the registry)" "$(vh "just vitest output")" "rc=2"
+for d in 0 9 10 12 14 15 99; do
+  has "forbidden DB $d fails" "$(vh "$H $d (registry DB 15); cleared 0 leftover keys")" "outside the harness range 1-8
+rc=1"
+done
+for d in 1 8; do eq "edge DB $d passes" "$(vh "$H $d (registry DB 15); cleared 0 leftover keys" | head -n1)" "$d"; done
+has "a pinned-DB line fails" "$(vh "[test-redis] using pinned Valkey DB 12")" "rc=1"
+has "a pinned-DB line fails even next to a claimed line" "$(vh "$H 3 (registry DB 15); cleared 0 leftover keys
+[test-redis] using pinned Valkey DB 12")" "pinned Valkey DB"
+has "two different claimed DBs fail" "$(vh "$H 3 (registry DB 15); cleared 0 leftover keys
+$H 4 (registry DB 15); cleared 0 leftover keys")" "two different Valkey DBs (3,4)
+rc=1"
+eq "an indented mention is not a claim (column 0 only)" "$(vh "  $H 3 (registry DB 15)")" "rc=2"
+
+HL="$H 3 (registry DB 15); cleared 0 leftover keys"
+rs 0 0 "$HL" 0 7
+has "run_suite: harness DB 3, registry says 7: not proven, gate fails" "$OUT" "FAIL invai-backend test: Valkey DB not proven (the harness line says DB 3 but the registry claim is DB 7)"
+has "...and overall_failed=1 even though vitest passed" "$OUT" "overall_failed=1"
+rs 0 0 "$HL" 0 3
+has "run_suite: harness DB 3 + registry DB 3: passes" "$OUT" "PASS invai-backend test"
+has "...and the log names the harness as the source" "$(cat "$T/log")" "Valkey DB: 3 (printed by the test harness, registry agrees; not DB 0, 9 or 15)"
+rs 0 0 "$HL" 1
+has "run_suite: harness line only (sampler saw nothing): passes" "$OUT" "PASS invai-backend test"
+hasnt "...and does not say 'not observed'" "$(cat "$T/log")" "not observed"
+rs 0 0 "" 0 7
+has "run_suite: registry only (no harness line): fallback passes" "$OUT" "PASS invai-backend test"
+has "...logged as registry only" "$(cat "$T/log")" "Valkey DB: 7 (claimed by the test harness; registry only"
+rs 0 0 "" 1
+has "run_suite: neither source and a green suite: gate fails" "$OUT" "FAIL invai-backend test: Valkey DB not proven (no harness claim line and no registry claim were seen)"
+has "...and overall_failed=1" "$OUT" "overall_failed=1"
+has "...and the log says not observed" "$(cat "$T/log")" "not observed"
+rs 1 0 "" 1
+hasnt "run_suite: neither source and an already failing suite: no extra Valkey failure" "$OUT" "not proven"
+for d in 0 9 15 12; do
+  rs 0 0 "$H $d (registry DB 15); cleared 0 leftover keys" 0 7
+  has "run_suite: captured line naming DB $d fails the gate" "$OUT" "FAIL invai-backend test: Valkey DB not proven (the harness claimed Valkey DB $d"
+  has "...overall_failed=1 (DB $d)" "$OUT" "overall_failed=1"
+done
+rs 0 0 "[test-redis] using pinned Valkey DB 12" 0 7
+has "run_suite: a pinned line fails the gate" "$OUT" "Valkey DB not proven (the suite used a pinned Valkey DB"
+rs 0 0 "$H 3 (registry DB 15); cleared 0 leftover keys\n$H 4 (registry DB 15); cleared 0 leftover keys" 0 7
+has "run_suite: two different DBs fail the gate" "$OUT" "two different Valkey DBs (3,4)"
+rs 0 0 "" 0 15
+has "run_suite: a registry-only claim outside 1-8 fails" "$OUT" "the registry claim is DB 15, outside the harness range 1-8"
+rs 1 0 "$H 9 (registry DB 15); cleared 0 leftover keys" 0 7
+has "run_suite: a failing suite with a forbidden DB carries the hint on its FAIL line" "$OUT" "[Valkey DB not proven: the harness claimed Valkey DB 9"
 
 # ---------- detection ----------
 rs 1 1

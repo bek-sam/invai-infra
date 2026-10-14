@@ -171,18 +171,71 @@ gate_watch_stop() {
   GATE_WATCH_PID=""
 }
 
-# gate_watch_report <db>: logs the claimed Valkey DB and every foreign session; returns 1 when any
+# gate_harness_valkey_db <suite output>: the Valkey DB the backend test harness says it claimed
+# (global-setup.ts prints `[test-redis] claimed Valkey DB <n> ...` at column 0; a backend change to
+# that text needs platform-sre, T-51-2). Prints the DB on stdout and returns 0 when exactly one
+# claimed DB in 1-8 is named and no pinned-DB line appears. Returns 2 when no claim line is there
+# (the caller falls back to the registry sampler), 1 with the reason on stdout when the output
+# proves a forbidden state: a DB outside 1-8 (0, 9, 10-14, 15), a `using pinned Valkey DB` line
+# (the gate unsets TEST_REDIS_URL, so a pin means the unset failed), or two different claimed DBs.
+gate_harness_valkey_db() {
+  local out="$1" dbs first
+  if printf '%s\n' "$out" | grep -Eq '^\[test-redis\] using pinned Valkey DB'; then
+    echo "the suite used a pinned Valkey DB (the gate unsets TEST_REDIS_URL)"; return 1
+  fi
+  dbs="$(printf '%s\n' "$out" | sed -n 's/^\[test-redis\] claimed Valkey DB \([0-9][0-9]*\)\( .*\)\{0,1\}$/\1/p' | sort -u)"
+  [ -n "$dbs" ] || return 2
+  if [ "$(printf '%s\n' "$dbs" | wc -l | tr -d ' ')" -gt 1 ]; then
+    echo "the harness named two different Valkey DBs ($(printf '%s' "$dbs" | paste -sd, -))"; return 1
+  fi
+  first="$(printf '%s\n' "$dbs" | head -n1)"
+  case "$first" in
+    [1-8]) echo "$first"; return 0 ;;
+    *) echo "the harness claimed Valkey DB $first, outside the harness range 1-8"; return 1 ;;
+  esac
+}
+
+# gate_valkey_verdict <suite output> <suite exit code> <registry claim or empty>: logs the
+# "gate backend suite Valkey DB" line and returns 0 (proven) or 1 (not proven; reason in
+# GATE_VALKEY_REASON). The harness line is the proof; the registry sampler is the fallback and must
+# agree with it when both are seen. Neither seen is a failure when the suite itself passed.
+gate_valkey_verdict() {
+  local out="$1" rc="$2" reg="$3" db hrc
+  GATE_VALKEY_REASON=""
+  db="$(gate_harness_valkey_db "$out")"; hrc=$?
+  if [ $hrc -eq 1 ]; then
+    GATE_VALKEY_REASON="$db"; log "gate backend suite Valkey DB: not proven ($db)"; return 1
+  fi
+  if [ $hrc -eq 0 ]; then
+    if [ -n "$reg" ] && [ "$reg" != "$db" ]; then
+      GATE_VALKEY_REASON="the harness line says DB $db but the registry claim is DB $reg"
+      log "gate backend suite Valkey DB: not proven ($GATE_VALKEY_REASON)"; return 1
+    fi
+    log "gate backend suite Valkey DB: $db (printed by the test harness${reg:+, registry agrees}; not DB 0, 9 or 15)"
+    return 0
+  fi
+  if [ -n "$reg" ]; then
+    case "$reg" in
+      [1-8]) log "gate backend suite Valkey DB: $reg (claimed by the test harness; registry only, no harness line in the output; not DB 0, 9 or 15)"; return 0 ;;
+      *) GATE_VALKEY_REASON="the registry claim is DB $reg, outside the harness range 1-8"
+         log "gate backend suite Valkey DB: not proven ($GATE_VALKEY_REASON)"; return 1 ;;
+    esac
+  fi
+  log "gate backend suite Valkey DB: not observed (no harness line in the output and no claim in the registry)"
+  if [ "$rc" -eq 0 ]; then
+    GATE_VALKEY_REASON="no harness claim line and no registry claim were seen"; return 1
+  fi
+  return 0
+}
+
+# gate_watch_report <db>: sets GATE_REGISTRY_CLAIM (the sampled Valkey DB, or empty) and logs every foreign session; returns 1 when any
 # other application was connected to the gate's database. Removes the sampler files.
 gate_watch_report() {
   local db="$1" claim foreign
   claim="$(grep '^claim|' "$GATE_WATCH_FILE" 2>/dev/null | tail -n1 | cut -d'|' -f2)"
   foreign="$(grep '^foreign|' "$GATE_WATCH_FILE" 2>/dev/null | cut -d'|' -f2- | sort | uniq -c | sed 's/^ *//')"
   rm -f "$GATE_WATCH_FILE" "$GATE_WATCH_FILE.stop"
-  if [ -n "$claim" ]; then
-    log "gate backend suite Valkey DB: $claim (claimed by the test harness; not DB 0, 9 or 15)"
-  else
-    log "gate backend suite Valkey DB: not observed (the harness claim was not seen in the registry)"
-  fi
+  GATE_REGISTRY_CLAIM="$claim"
   if [ -n "$foreign" ]; then
     log "GATE DETECTION: another application was connected to $db during the suite (count, app|client|state):"
     printf '%s\n' "$foreign" | sed 's/^/  /' >>"$LOG_FILE"

@@ -253,7 +253,7 @@ run_suite() {
   kind="$(repo_kind "$repo")"
   cmd="$(check_command "$kind" "$suite")"
   section "$repo $suite: $cmd"
-  local extra_env=() env_cmd=(env) tdb="" tapp="" watch_rc=0 hint=""
+  local extra_env=() env_cmd=(env) tdb="" tapp="" watch_rc=0 hint="" valkey_rc=0
   if [ "$repo" = invai-backend ] && [ "$suite" = test ]; then
     # T-46-1: a database and (via the harness claim) a Valkey DB no other process names.
     tdb="$(gate_test_db_name)"; tapp="$(gate_app_name)"
@@ -283,14 +283,20 @@ run_suite() {
   if [ -n "$tdb" ]; then
     gate_watch_stop
     gate_watch_report "$tdb" || { watch_rc=1; hint=" [another application connected to $tdb during the suite, see $LOG_FILE]"; }
+    # T-51-2 (B-436): the Valkey DB is proven from the suite's own output; the sampler is the fallback.
+    gate_valkey_verdict "$out" "$rc" "$GATE_REGISTRY_CLAIM" || valkey_rc=1
     gate_test_db_drop "$tdb" || true
   fi
-  if [ $rc -eq 0 ]; then
+  if [ $rc -eq 0 ] && [ "$valkey_rc" -ne 0 ]; then
+    echo "FAIL $repo $suite: Valkey DB not proven ($GATE_VALKEY_REASON), see $LOG_FILE"
+    GATE_OVERALL_FAILED=1
+  elif [ $rc -eq 0 ]; then
     n="$(count_passed "$out")"
     echo "PASS $repo $suite $n passed"
   else
     names="$(failing_names "$out")"
     [ -z "$names" ] && names="see $LOG_FILE"
+    [ "$valkey_rc" -eq 0 ] || hint="$hint [Valkey DB not proven: $GATE_VALKEY_REASON]"
     echo "FAIL $repo $suite: $names$hint"
     GATE_OVERALL_FAILED=1
   fi
