@@ -349,10 +349,14 @@ the guard hook blocks deploys, secret changes and AWS CLI calls for agents.
 | `ImagingSharedSecret` (32+ chars) | `IMAGING_SHARED_SECRET` (api, worker, imaging) |
 | `AppDbPassword` (URL-safe, 32+ chars) | the `invai_app` password in `DATABASE_URL` and the RDS Proxy credential |
 | `AnthropicApiKey`, `EasyPostApiKey`, `EasyPostWebhookSecret`, `ShopifyApiKey`, `ShopifyApiSecret`, `StripeSecretKey`, `StripeWebhookSecret` | the env var with the same name in upper snake case |
+| `OpenAiApiKey`, `SsActivewearAccount`, `SsActivewearApiKey`, `CensusApiKey`, `GoogleTrendsApiKey`, `PinterestApiKey`, `JungleScoutApiKey` (optional, api and worker) | `OPENAI_API_KEY`, `SS_ACTIVEWEAR_ACCOUNT`, `SS_ACTIVEWEAR_API_KEY`, `CENSUS_API_KEY`, `GOOGLE_TRENDS_API_KEY`, `PINTEREST_API_KEY`, `JUNGLE_SCOUT_API_KEY`. Owner sets them with OI-40; while blank (a single space, every stage) the mock provider runs (AI uses Anthropic or its mock, S&S and market signals use mocks) |
+| `InternalAdminToken` (optional, 32+ chars, api only) | `INTERNAL_ADMIN_TOKEN`; while blank the internal DLQ/redrive routes answer 404 |
 | `SmtpUrl` (`smtps://<SES SMTP user>:<password>@email-smtp.<region>.amazonaws.com:465`) | `SMTP_URL`; needs SES production access |
 
-Set each secret once per stage with SST's secret command. Outside `demo` no secret has a
-placeholder, so a deploy fails while one is missing.
+Set each secret once per stage with SST's secret command. Outside `demo` the required secrets
+and provider keys have no placeholder, so a deploy fails while one is missing; the optional ones
+above default to a blank on every stage and never block a deploy. `pnpm secrets:test` fails when
+`invai-backend/src/env.ts` gains a secret that is neither wired here nor on the test's allowlist.
 
 ### Release order
 

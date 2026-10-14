@@ -31,6 +31,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm scan:test
+      - run: pnpm secrets:test
 
   # Supply-chain scan (T-31-4): same tools, digests and threshold as `pnpm scan` in invai-infra
   # (scan/tools.env). Results stay in the job log: nothing is uploaded. Ignores come from

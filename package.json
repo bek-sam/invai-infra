@@ -15,6 +15,7 @@
     "local:down": "docker compose -f local/docker-compose.yml down",
     "local:full": "bash scripts/full.sh up",
     "deploy:test": "bash scripts/deploy/deploy-config.test.sh",
+    "secrets:test": "bash scripts/deploy/secrets-wiring.test.sh",
     "scan": "bash scripts/scan.sh",
     "scan:test": "bash scripts/scan.test.sh",
     "contracts:check": "bash scripts/contracts-check.sh",

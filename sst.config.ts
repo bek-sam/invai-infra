@@ -87,6 +87,10 @@ export default $config({
     // runs that provider's mock (SSM rejects an empty parameter value).
     const required = (name: string) => new sst.Secret(name);
     const providerKey = (name: string) => new sst.Secret(name, isDemo ? " " : undefined);
+    // Optional on every stage (B-355): blank trims to "unset" in env.ts, which means that
+    // integration runs its mock or stays off (INTERNAL_ADMIN_TOKEN: the internal routes 404).
+    // Setting a real value is an owner step (OI-40); nothing here ever blocks a deploy.
+    const optionalKey = (name: string) => new sst.Secret(name, " ");
     const secret = {
       BETTER_AUTH_SECRET: required("BetterAuthSecret"),
       // Separate from BETTER_AUTH_SECRET on purpose: rotating the auth secret must not also
@@ -106,6 +110,15 @@ export default $config({
       STRIPE_WEBHOOK_SECRET: providerKey("StripeWebhookSecret"),
       // smtps://<SES SMTP user>:<password>@email-smtp.<region>.amazonaws.com:465 (B-58).
       SMTP_URL: providerKey("SmtpUrl"),
+      OPENAI_API_KEY: optionalKey("OpenAiApiKey"),
+      SS_ACTIVEWEAR_ACCOUNT: optionalKey("SsActivewearAccount"),
+      SS_ACTIVEWEAR_API_KEY: optionalKey("SsActivewearApiKey"),
+      CENSUS_API_KEY: optionalKey("CensusApiKey"),
+      GOOGLE_TRENDS_API_KEY: optionalKey("GoogleTrendsApiKey"),
+      PINTEREST_API_KEY: optionalKey("PinterestApiKey"),
+      JUNGLE_SCOUT_API_KEY: optionalKey("JungleScoutApiKey"),
+      // Operator token for the internal DLQ/redrive routes: api only (not the worker).
+      INTERNAL_ADMIN_TOKEN: optionalKey("InternalAdminToken"),
     };
 
     // ---- Postgres ------------------------------------------------------------------------
@@ -258,6 +271,16 @@ export default $config({
         string,
         $util.Output<string>
       >;
+    // Optional provider keys (A5/A6): api and worker read them; migrate and imaging do not.
+    const providerSsm = pick(
+      "OPENAI_API_KEY",
+      "SS_ACTIVEWEAR_ACCOUNT",
+      "SS_ACTIVEWEAR_API_KEY",
+      "CENSUS_API_KEY",
+      "GOOGLE_TRENDS_API_KEY",
+      "PINTEREST_API_KEY",
+      "JUNGLE_SCOUT_API_KEY",
+    );
     const backendSsm = pick(
       "DATABASE_URL",
       "MIGRATION_DATABASE_URL",
@@ -420,7 +443,7 @@ export default $config({
         ...backendEnvironment,
         ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-api", stage),
       },
-      ssm: backendSsm,
+      ssm: { ...backendSsm, ...providerSsm, ...pick("INTERNAL_ADMIN_TOKEN") },
       loadBalancer: {
         // B-03: HTTPS with an ACM certificate for api.<domain>; plain HTTP only redirects.
         domain: { name: apiHost, dns: sst.aws.dns() },
@@ -471,7 +494,7 @@ export default $config({
         ...backendEnvironment,
         ...otelEnv(process.env.INVAI_OTEL_ENDPOINT, "invai-worker", stage),
       },
-      ssm: backendSsm,
+      ssm: { ...backendSsm, ...providerSsm },
       scaling: { min: 1, max: 1 },
       transform: { taskDefinition: withStopTimeout, executionRole },
     });
