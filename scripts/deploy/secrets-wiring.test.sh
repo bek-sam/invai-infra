@@ -12,6 +12,14 @@ INFRA_DIR="${INFRA_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 BACKEND_ENV="${BACKEND_ENV:-$INFRA_DIR/../invai-backend/src/env.ts}"
 export INFRA_DIR BACKEND_ENV
 
+for f in "$INFRA_DIR/sst.config.ts" "$BACKEND_ENV"; do
+  if [ ! -f "$f" ]; then
+    echo "not ok 1 - input file: $(basename "$f") not found at $f (invai-backend must be checked out beside invai-infra)"
+    echo "1 checks, 1 failed"
+    exit 1
+  fi
+done
+
 exec python3 -I - "$INFRA_DIR/sst.config.ts" "$BACKEND_ENV" <<'PY'
 import re, sys
 
