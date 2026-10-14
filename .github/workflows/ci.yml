@@ -27,7 +27,23 @@ jobs:
           node-version-file: invai-infra/.nvmrc
           cache: pnpm
           cache-dependency-path: invai-infra/pnpm-lock.yaml
+      # sst.config.ts is typechecked against ../invai-web and ../invai-floor csp.ts (public repos).
+      # No ssh-key, no token: this job installs third-party packages and must hold no secret.
+      - name: Checkout invai-web (public)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bek-sam/invai-web
+          path: invai-web
+          persist-credentials: false
+      - name: Checkout invai-floor (public)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bek-sam/invai-floor
+          path: invai-floor
+          persist-credentials: false
       - run: pnpm install --frozen-lockfile
+      - name: Generate .sst/platform (no credentials)
+        run: pnpm exec sst install
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm scan:test
@@ -44,11 +60,11 @@ jobs:
         with:
           path: invai-infra
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Checkout invai-backend (public; fails here if it turns private)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: bek-sam/invai-backend
           path: invai-backend
-          ssh-key: ${{ secrets.BACKEND_DEPLOY_KEY }}
           persist-credentials: false
       - run: bash scripts/deploy/secrets-wiring.test.sh
         working-directory: invai-infra
@@ -67,7 +83,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Secrets (gitleaks, full history)
-        run: docker run --rm -v "$PWD/invai-infra:/repo:ro" ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --redact --no-banner --exit-code 1
+        run: |
+          python3 invai-infra/scan/ignores.py gitleaks invai-infra/scan/ignores.json invai-infra > "$RUNNER_TEMP/gl.toml"
+          docker run --rm -v "$PWD/invai-infra:/repo:ro" -v "$RUNNER_TEMP:/out:ro" ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo -c /out/gl.toml --redact --no-banner --exit-code 1
       - name: Dependencies (trivy, HIGH and CRITICAL with a fix)
         run: |
           docker run --rm -v "$PWD/invai-infra:/src:ro" aquasec/trivy@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa fs /src \
